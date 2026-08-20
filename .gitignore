@@ -1,6 +1,7 @@
 .env
 *.db
 outputs/
+profile_source/
 __pycache__/
 *.pyc
 .venv/
