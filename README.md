@@ -1,0 +1,369 @@
+# hobot
+
+A job-hunting agent that runs in the background and is driven from Discord:
+finds postings, scores them against your profile, writes its own cover
+letters, optionally watches your inbox and drafts replies, and can dig up
+company contacts. Runs on a local LLM (Ollama), no paid API required to work.
+
+## What it does
+
+- **Finds postings continuously** (JobSpy, scraping, no API key needed, plus
+  French sources if you set them up: La Bonne Alternance, Adzuna, France
+  Travail), scores each one against your profile, and writes a cover letter in
+  PDF for the best matches automatically.
+- **Checks that postings are still live**: one that's disappeared from the
+  source site (position filled, listing pulled) gets flagged and dropped
+  instead of sitting in the list looking just as valid as everything else.
+- **Runs from Discord**: `/status`, `/offers`, `/offre <id>`, `/applied`,
+  `/funnel` (where things stall in the application process), `/pause`,
+  `/resume`, and `/demande "<anything>"` for everything else: looking up a
+  specific posting, excluding a listing, checking the score breakdown,
+  drafting or fixing an email, changing your profile on the fly. What
+  `/demande` covers in more detail is further down.
+- **No CV required to get started**: describe what you're looking for in one
+  sentence in Discord ("I'm a Python developer looking for something in
+  Lyon") and it builds a structured profile from that. A CV PDF works too if
+  you'd rather use one.
+- **Never sends an email without confirmation.** A Gmail draft, always. A real
+  send only after clicking a "Confirm" button, never the agent on its own.
+
+## Required vs. optional
+
+Exactly one thing is required for this to run at all: **Discord + a local
+Ollama model**. Everything else turns on by filling in its section of `.env`;
+left empty, the matching feature just stays off, nothing breaks.
+
+| Feature | Required? | What it needs |
+|---|---|---|
+| Discord bot + job discovery (JobSpy) | **Yes** | Discord token + local Ollama |
+| French source, apprenticeship only | No | La Bonne Alternance — **France only**, free |
+| French source, any contract type (filterable) | No | France Travail "Offres d'emploi v2" — **France only**, free |
+| General-purpose, multi-country source | No | Adzuna — free up to 2500 calls/month |
+| Spontaneous-application leads (France) | No | La Bonne Boite — **needs manual approval from France Travail**, not active on credentials alone |
+| Mail monitoring (reading + draft replies) | No | One or more Gmail accounts |
+| Web search for sharper letters/contacts | No | Self-hosted SearXNG (docker, free) |
+| Company contacts (legal representatives) | No | Pappers — **France only** |
+| Company contacts (verified emails) | No | Hunter.io + Snov.io — free up to 50-100/month |
+
+Each section below matches one row of this table. Do the base install first,
+then pick whichever optional sections you want, there's no need to do them
+all the same day.
+
+## Base install
+
+### Requirements
+
+Python 3.10 or newer (built and tested on 3.12), `git`, and something to run
+an Ollama model on (a 7-8B model with tool-calling support, qwen2.5/qwen3,
+llama3.1, mistral-nemo, runs fine on a consumer GPU or even CPU-only if you're
+fine with slower replies). The systemd instructions below assume Linux; on
+macOS or Windows, `python daemon.py` in a terminal that stays open does the
+same thing, just without automatic restart on boot.
+
+### 1. Ollama
+
+Install it from [ollama.com](https://ollama.com), then pull a model:
+
+```bash
+ollama pull qwen3.8   # or any other model with tool-calling support
+```
+
+The exact model name doesn't matter as long as it supports tool-calling (the
+agent calls Python functions to query the database, draft letters, and so
+on; a model that can't do that won't be able to drive the bot properly).
+Check Ollama is actually responding before moving on:
+
+```bash
+curl http://localhost:11434/api/tags
+```
+
+### 2. Clone the repo and install dependencies
+
+```bash
+git clone <your-fork-or-this-repo> hobot
+cd hobot
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. Create the Discord bot
+
+1. Go to [discord.com/developers/applications](https://discord.com/developers/applications),
+   click **New Application**, give it a name.
+2. In the **Bot** tab, click **Reset Token** (or **Add Bot** if it doesn't
+   exist yet) to get the token, keep it, it's `DISCORD_BOT_TOKEN`. No
+   privileged intent (message content, presence, members) is needed: the bot
+   only uses slash commands.
+3. In **OAuth2 → URL Generator**, check the `bot` and `applications.commands`
+   scopes, then in permissions check at least **Send Messages**, **Embed
+   Links**, **Attach Files**, and **Use Slash Commands**. Open the generated
+   URL at the bottom of the page and invite the bot to your server (or a
+   private server made just for this, the simplest option, a channel for
+   yourself alone).
+4. Turn on developer mode in Discord (Settings → Advanced → Developer Mode),
+   then right-click the channel you want the bot to post in and pick **Copy
+   Channel ID**, that's `DISCORD_CHANNEL_ID`.
+
+### 4. Minimal configuration and first launch
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and fill in at least `OLLAMA_MODEL` (the exact name from step 1),
+`DISCORD_BOT_TOKEN`, and `DISCORD_CHANNEL_ID`. Everything else can stay empty
+for now. Run it:
+
+```bash
+python daemon.py
+```
+
+The bot should connect and show up online on your server within a few
+seconds. `Ctrl+C` to stop it, the "running continuously" section below covers
+leaving it running without a terminal open.
+
+### 5. Set your profile
+
+Two equivalent options, pick one:
+
+- **No CV**, straight from Discord: `/demande "I'm a Python developer
+  looking for something in Lyon"`. The agent turns that into a structured
+  profile (skills, target roles, target locations) and saves it. Adjust it
+  any time the same way (`/demande "add Rust to my skills"`, `/demande "I'm
+  also open to Bordeaux"`, ...).
+- **With a CV PDF**: set `CV_PATH=/path/to/your_cv.pdf` in `.env`, then run
+  `python -m core.profile` once. The profile gets extracted and saved to the
+  database; no need to do both, either one is enough and they write to the
+  same place.
+
+From here, discovery runs on the schedule set by
+`DISCOVERY_HOURS_WEEKDAY`/`DISCOVERY_HOURS_WEEKEND` (9am/11am/1pm/3pm/5pm on
+weekdays and 10am/4pm on weekends by default), nothing needs to be triggered
+by hand, though `/demande "find me developer postings in Lyon right now"`
+runs an immediate search if you don't want to wait.
+
+## French job sources (optional)
+
+JobSpy alone already works with nothing else configured. These three sources
+add to it, each independent of the others:
+
+**La Bonne Alternance**: searches by ROME code (the French job-role taxonomy,
+not free text), apprenticeship only. Free key on
+[api.gouv.fr](https://api.gouv.fr) (search "La Bonne Alternance", request
+access). Fill in `LBA_API_KEY` and, if the target role isn't IT, change
+`LBA_ROME_CODES` (the full ROME reference is on
+[francetravail.io](https://francetravail.io)).
+
+**Adzuna**: general-purpose, multi-country, free up to 2500 calls/month.
+Developer account on [developer.adzuna.com](https://developer.adzuna.com/),
+which gives you an `app_id` and an `app_key`, put them in `ADZUNA_APP_ID` and
+`ADZUNA_APP_KEY`.
+
+**France Travail "Offres d'emploi v2"**: the French national job board, every
+contract type by default (filterable, see below). Create an account on
+[francetravail.io](https://francetravail.io), register an application in the
+developer area, then subscribe to the "Offres d'emploi v2" product, that
+subscription is immediate, no waiting. You get a client id and secret, put
+them in `FRANCE_TRAVAIL_CLIENT_ID` and `FRANCE_TRAVAIL_CLIENT_SECRET`. To
+filter on a specific contract type (apprenticeship, say), set
+`FRANCE_TRAVAIL_NATURE_CONTRAT=E1,E2`; left empty, the search covers every
+contract type.
+
+While subscribing you'll also see "La Bonne Boite v2" (spontaneous-application
+leads: companies flagged as likely hiring but with no published listing). The
+code is ready and reuses the same client id/secret, but France Travail
+requires a manual approval on their end on top of the subscription for this
+particular API; until it's granted, this source just stays inactive without
+blocking anything else (the bot handles that on its own, no error surfaces).
+
+## Mail monitoring (optional)
+
+Reads incoming mail (automatic classification, recruiter replies detected)
+and drafts replies, never a send without your explicit go-ahead.
+
+1. On the Gmail account to monitor, turn on 2-step verification (required for
+   the next part), then create an "app password" in Google's security
+   settings, not your normal password, one generated specifically for this.
+2. Fill in `GMAIL_ACCOUNT_1` (the address) and `GMAIL_APP_PASSWORD_1` (the
+   generated password) in `.env`.
+3. To watch more than one account, add `GMAIL_ACCOUNT_2`/
+   `GMAIL_APP_PASSWORD_2`, `_3`, and so on, each one added gets watched for
+   reading.
+4. `GMAIL_SEND_ACCOUNT` picks which of those accounts is allowed to draft or
+   send mail (only one, even if several are watched for reading), set it to
+   one of the addresses already declared.
+
+`EMAIL_POLL_INTERVAL_MIN` controls how often it checks during the day (20
+minutes by default), `EMAIL_INTERVAL_OFFPEAK_MIN` at night.
+
+## Web search and company contacts (optional)
+
+Without any of this, cover letters still get written, just without company
+enrichment (recent news, what the company actually does). Each piece below
+is independent of the others.
+
+**SearXNG** (web search, self-hosted, free): sharpens letters and contact
+lookups by giving the agent some real context on the company before writing:
+
+```bash
+# once, any random string for SEARXNG_SECRET in .env
+docker-compose up -d
+```
+
+That starts SearXNG on `localhost:8888` (`SEARXNG_HOST` in `.env`, already
+set to that by default). Nothing else to do.
+
+**Pappers** (French legal registry, company officers): France only. Free
+token on [pappers.fr/api](https://www.pappers.fr/api), goes in
+`PAPPERS_API_TOKEN`.
+
+**Hunter.io** (verified emails by domain, any country): free plan, 50
+searches/month. Key on [hunter.io/api](https://hunter.io/api), in
+`HUNTER_API_KEY`.
+
+**Snov.io** (automatic fallback when Hunter comes up empty, separate quota):
+free plan, 50 credits/month, no card required. Credentials on
+[snov.io/api](https://snov.io/api), in `SNOV_USER_ID` and `SNOV_API_SECRET`.
+
+## Running it continuously
+
+In development, `python daemon.py` in a terminal is enough. To run it in the
+background without a session open (Linux, user-level systemd):
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/hobot.service ~/.config/systemd/user/
+# edit the copied file: replace both occurrences of /path/to/hobot with the
+# real path where you cloned the repo
+systemctl --user daemon-reload
+systemctl --user enable --now hobot
+loginctl enable-linger $USER   # so it keeps running without a session open
+```
+
+Managing it: `systemctl --user status|restart|stop hobot`,
+`journalctl --user -u hobot -f` for live logs. The service is deliberately
+constrained (2GB RAM cap, low CPU priority, restarts after a crash but gives
+up after 5 failures in 10 minutes) so a problem in this process can't drag
+down the rest of the machine.
+
+## First steps in Discord
+
+Once the bot is online and the profile is set (step 5 above):
+
+- `/status` gives a summary of the last discovery run and mail check, and
+  when the next one is due, useful to confirm everything's running without
+  waiting for the first cycle.
+- `/offers` lists the best postings found so far, with a button on each one
+  to mark it applied directly.
+- `/offre 12` (swap 12 for a real number) gives the full detail on one
+  posting: description, score, reasoning, status, last time it was seen live.
+- `/demande "..."` takes pretty much any request in plain language, see the
+  list below for what that actually covers.
+
+## Commands
+
+Seven dedicated slash commands, plus `/demande`, which opens up a much wider
+set of tools in plain language:
+
+| Command | What it does |
+|---|---|
+| `/status` | Summary of the last discovery/mail run and when the next one is due |
+| `/offers` | Best active postings, with an "already applied" button on each |
+| `/offre <id>` | Full detail on one posting: description, score, status, last seen live |
+| `/funnel` | Conversion funnel: found → scored → letter → sent → reply → interview |
+| `/applied <id>` | Marks a posting applied (drops it from `/offers`) |
+| `/pause` / `/resume` | Stops or restarts scheduled checks (postings + mail) |
+| `/demande "<text>"` | Everything else, see below |
+
+`/demande` is backed by an agent that can, among other things: look up a
+specific posting or run a live search for a city/keyword outside your usual
+coverage, give the full detail on a posting, write or review a cover letter,
+look up a company's contacts (officers, verified emails), exclude or
+re-include a posting, show or edit your profile, give the score breakdown
+across all postings, list applications already sent, list pending mail
+drafts, report how many sends are left for the day, and create/edit/delete a
+draft reply. One plain-language sentence is enough, no need to know a tool's
+exact name for the agent to pick the right one.
+
+## Architecture
+
+```
+daemon.py            — single process: scheduler (APScheduler) + Discord bot
+graphs/
+  discovery_graph.py  — fetch (JobSpy + French sources) -> dedup -> score (LLM) -> letters -> log
+  email_graph.py      — fetch mail -> classify (LLM) -> draft replies
+  chat_agent.py        — the agent behind /demande (ReAct, tool-calling)
+core/
+  db.py               — SQLite schema (offers, applications, user_profile...)
+  llm.py              — shared Ollama client
+  profile.py          — CV or free text -> structured profile
+  circuit_breaker.py  — automatic backoff per failing source (anti-ban)
+  locations.py         — French city registry -> coordinates/INSEE code (optional)
+  france_travail_auth.py — shared OAuth2 for the France Travail Connect APIs (optional)
+  api_usage.py        — monthly quota tracking (Adzuna)
+tools/
+  sources_jobspy.py   — discovery connector (no key required)
+  sources_lba.py, sources_adzuna.py, sources_francetravail.py,
+  sources_labonneboite.py — French sources (optional, see table above)
+  sources_pappers.py, sources_hunter.py, sources_snov.py — contacts (optional)
+  web_search.py       — SearXNG (optional)
+  email_tools.py      — IMAP/SMTP (optional)
+  link_check.py       — flags postings whose link has died
+  documents.py        — renders cover letters to PDF
+  discord_bot.py       — slash commands + bridge to the agent
+```
+
+Every posting goes through: discovery -> dedup (against the database and
+across sources) -> LLM scoring (against your profile) -> above a threshold,
+an automatic cover letter. Nothing ever gets sent automatically anywhere,
+applications and emails stay drafts until an explicit human action.
+
+## Search tip
+
+JobSpy does real scraping, not an API call: broad, generic target roles
+("backend developer" rather than a very specific title) tend to give better
+results. `modifier_profil`/`definir_profil` (via `/demande`) let you adjust
+that at any point.
+
+## Design and safety
+
+A few rules held everywhere in the code, not just stated here:
+
+- **No automatic email send, ever.** The agent drafts one on its own
+  initiative when a posting is worth it; only a human clicking a button in
+  Discord triggers an actual SMTP send.
+- **Automatic backoff per failing source** (`core/circuit_breaker.py`): a
+  source that errors out gets backed off progressively (2h, doubling on each
+  failure, capped at 24h) instead of retried without limit, to stay
+  reasonable toward sites that don't appreciate repeated hits.
+- **Deliberately conservative link checking** (`tools/link_check.py`): only
+  an unambiguous 404/410 marks a posting dead; a timeout or a 403 (often an
+  anti-bot block on a perfectly live listing) changes nothing rather than
+  risk a false positive.
+- **Nothing ever gets silently dropped.** A posting gets saved as soon as
+  it's found, even before scoring; if scoring falls behind on a given day, it
+  just waits for the next run instead of being forgotten.
+
+## What's not here (yet)
+
+This started as a generic fork of a more personal project, and a few pieces
+of that one didn't make it over, either because they assume an already
+well-worn setup or didn't fit a generic version. For reference, if you want
+to take it further:
+
+- Search keywords come straight from the profile, not adjusted automatically
+  run to run based on results.
+- No unified quota dashboard across every API (Adzuna has its own monthly
+  guard, Hunter/Snov/Pappers don't here).
+- Cover letters render to PDF; the CV itself isn't auto-generated as a
+  tailored PDF per posting.
+- No dedicated command to send already-generated files (CV/letter) back
+  through Discord.
+
+None of that stops the bot from working correctly for the main loop: finding
+postings, sorting them, writing letters, handling mail.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
