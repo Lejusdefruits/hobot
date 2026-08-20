@@ -54,24 +54,30 @@ all the same day.
 ### Requirements
 
 Python 3.10 or newer (built and tested on 3.12), `git`, and something to run
-an Ollama model on (a 7-8B model with tool-calling support, qwen2.5/qwen3,
-llama3.1, mistral-nemo, runs fine on a consumer GPU or even CPU-only if you're
-fine with slower replies). The systemd instructions below assume Linux; on
-macOS or Windows, `python daemon.py` in a terminal that stays open does the
-same thing, just without automatic restart on boot.
+an Ollama model on (a 7-8B model with tool-calling support runs fine on a
+consumer GPU, or CPU-only if you're fine with slower replies). The systemd
+instructions below assume Linux; on macOS or Windows, `python daemon.py` in a
+terminal that stays open does the same thing, just without automatic restart
+on boot.
 
 ### 1. Ollama
 
 Install it from [ollama.com](https://ollama.com), then pull a model:
 
 ```bash
-ollama pull qwen3.8   # or any other model with tool-calling support
+ollama pull qwen3.8
 ```
 
-The exact model name doesn't matter as long as it supports tool-calling (the
-agent calls Python functions to query the database, draft letters, and so
-on; a model that can't do that won't be able to drive the bot properly).
-Check Ollama is actually responding before moving on:
+**qwen3.8 is the recommended default here**, not just a placeholder example:
+it's a recent release and, in practice, one of the few local models in this
+size class that reliably drives multi-step tool-calling without losing track
+of what it's doing (repeating a tool call, forgetting to conclude, or
+returning malformed arguments). That's the actual bottleneck for something
+like this bot, which has to chain database lookups, letter drafting, and
+mail tools correctly turn after turn. Other tool-calling models (qwen2.5,
+llama3.1, mistral-nemo) will run, but expect more of the failure modes above
+the smaller/older they get. Check Ollama is actually responding before
+moving on:
 
 ```bash
 curl http://localhost:11434/api/tags
