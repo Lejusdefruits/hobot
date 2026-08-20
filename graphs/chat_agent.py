@@ -438,6 +438,42 @@ def sauvegarder_lettre_motivation(offer_id: int, contenu: str) -> str:
 
 
 @tool
+def adapter_cv(offer_id: int) -> str:
+    """Generates a tailored version of the candidate's own uploaded CV for
+    one specific offer -- same file, same layout, same fonts, only the
+    profile/summary paragraph (and, if the CV's skills section is a plain
+    text list, which real skills fill the visible slots) changes. Requires
+    a CV to have been uploaded first via /profil; never invents a skill,
+    project, or experience not already in the profile. Use this after
+    scoring an offer highly, alongside (not instead of)
+    sauvegarder_lettre_motivation."""
+    from tools.cv_tailor import tailor_cv
+
+    with get_connection() as conn:
+        row = conn.execute("SELECT title, description FROM offers WHERE id = ?", (offer_id,)).fetchone()
+    if not row:
+        return f"No offer #{offer_id}."
+
+    path = tailor_cv(offer_id, row["title"], row["description"])
+    if path is None:
+        return ("Couldn't tailor a CV for this offer -- either no CV was uploaded yet (use /profil), "
+                "or the tailoring attempt failed. The cover letter isn't affected.")
+
+    with get_connection() as conn:
+        existing = conn.execute(
+            "SELECT id FROM applications WHERE offer_id = ? ORDER BY id DESC LIMIT 1", (offer_id,),
+        ).fetchone()
+        if existing:
+            conn.execute("UPDATE applications SET cv_path = ? WHERE id = ?", (str(path), existing["id"]))
+        else:
+            conn.execute(
+                "INSERT INTO applications (offer_id, cv_path, status) VALUES (?, ?, 'draft')",
+                (offer_id, str(path)),
+            )
+    return f"Tailored CV saved to {path}."
+
+
+@tool
 def lire_lettre_motivation(offer_id: int) -> str:
     """Shows the TEXT of a cover letter already written for an offer
     (auto-generated above the score threshold, or via
@@ -736,7 +772,7 @@ def preparer_envoi_mail(destinataire: str, sujet: str, contenu: str) -> str:
 TOOLS = [
     rechercher_offres, chercher_offres_maintenant, mes_candidatures, details_offre,
     description_complete_offre, rechercher_entreprise, rechercher_contacts_entreprise, profil_candidat,
-    definir_profil, modifier_profil, statut_veille, sauvegarder_lettre_motivation, lire_lettre_motivation,
+    definir_profil, modifier_profil, statut_veille, sauvegarder_lettre_motivation, adapter_cv, lire_lettre_motivation,
     marquer_postule, annuler_postule, exclure_offre, inclure_offre, repartition_scores, funnel_conversion,
     brouillons_en_attente,
     envois_restants_aujourdhui, comptes_mail_suivis, lire_derniers_mails, rechercher_emails,
@@ -768,6 +804,10 @@ Non-negotiable rules:
 - To SHOW a letter already written (a question like "show me the letter for
   X"), use lire_lettre_motivation and paste its text into your reply -- never
   just give the file path.
+- If the user asks for a tailored CV for an offer (or you're drafting a
+  letter for a strong match and a CV has been uploaded via /profil), call
+  adapter_cv -- it edits their own uploaded CV in place, do not try to write
+  or describe CV content yourself.
 - Reply in English, concisely.
 """
 

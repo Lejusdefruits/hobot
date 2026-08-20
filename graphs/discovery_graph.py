@@ -561,10 +561,19 @@ def draft_letters_node(state: DiscoveryState) -> dict:
                 lettre = result.get("lettre", "")
                 from tools.documents import generate_letter_pdf
                 path = generate_letter_pdf(offer["id"], lettre, full_name=full_name)
-                conn.execute(
+                cur = conn.execute(
                     "INSERT INTO applications (offer_id, cover_letter_path, status) VALUES (?, ?, 'draft')",
                     (offer["id"], str(path)),
                 )
+                # Best-effort, never blocks a letter that already succeeded --
+                # returns None (no CV uploaded via /profil yet, or the
+                # tailoring attempt itself failed) far more often than not on
+                # a fresh install, that's expected, not an error.
+                from tools.cv_tailor import tailor_cv
+                cv = tailor_cv(offer["id"], offer["title"] or "", offer["description"] or "")
+                if cv:
+                    conn.execute("UPDATE applications SET cv_path = ? WHERE id = ?", (str(cv), cur.lastrowid))
+                    _log(f"[cv] #{offer['id']} tailored -> {cv}")
                 conn.commit()
                 drafted.append(dict(offer))
                 _log(f"[letter] #{offer['id']} {offer['title']} ({offer['score']}) -> {path}")

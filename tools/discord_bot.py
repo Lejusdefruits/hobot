@@ -12,6 +12,7 @@ propagation.
 import asyncio
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -373,6 +374,68 @@ class ConfirmSendView(discord.ui.View):
 
 
 AGENT_TIMEOUT_SECONDS = int(os.environ.get("AGENT_TIMEOUT_SECONDS", "180"))
+
+
+@tree.command(name="profil", description="Set your profile from a CV file (PDF or .docx)")
+@app_commands.describe(fichier="Your CV, as a PDF or .docx file")
+async def profil(interaction: discord.Interaction, fichier: discord.Attachment):
+    from core import profile as profile_mod
+
+    await interaction.response.defer()
+    suffix = Path(fichier.filename).suffix.lower()
+    if suffix not in (".pdf", ".docx"):
+        await interaction.followup.send(embed=base_embed(
+            "Unsupported file", color=COLOR_ERROR,
+            description="Only PDF and .docx are supported for now.",
+        ))
+        return
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        await fichier.save(Path(tmp.name))
+        tmp_path = Path(tmp.name)
+
+    try:
+        fmt = await asyncio.get_event_loop().run_in_executor(None, profile_mod.detect_format, tmp_path)
+        parsed = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: profile_mod.parse_cv(tmp_path, fmt=fmt)
+        )
+        await asyncio.get_event_loop().run_in_executor(None, profile_mod.save_profile, parsed)
+        await asyncio.get_event_loop().run_in_executor(
+            None, lambda: profile_mod.save_profile_source(tmp_path, fmt)
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    embed = base_embed("Profile saved", color=COLOR_ACTIVE)
+    embed.add_field(name="Name", value=parsed.get("full_name") or "(not detected)", inline=True)
+    embed.add_field(name="Skills", value=", ".join(parsed.get("skills", [])) or "(none)", inline=False)
+    embed.add_field(name="Target roles", value=", ".join(parsed.get("target_roles", [])) or "(none)", inline=True)
+    embed.add_field(name="Target locations", value=", ".join(parsed.get("target_locations", [])) or "(none)",
+                     inline=True)
+    await interaction.followup.send(embed=embed)
+
+    # Gaps are computed deterministically (no LLM call, see
+    # core/profile.py::detect_gaps) -- the model's only job below is to
+    # phrase already-identified gaps as natural questions, not to notice
+    # them on its own from a bare "I uploaded a CV" message, which is the
+    # kind of implicit reasoning this project already treats small local
+    # models as unreliable at (see the README's model recommendation).
+    gaps = profile_mod.detect_gaps(parsed)
+    if gaps:
+        prompt = (
+            "I just uploaded my CV. Here's what looks thin or missing: "
+            f"{', '.join(gaps)}. Ask me 2-4 natural follow-up questions to fill these in, "
+            "referencing what's already in my profile where relevant."
+        )
+        try:
+            reply = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(None, agent_ask, prompt, str(interaction.user.id)),
+                timeout=AGENT_TIMEOUT_SECONDS,
+            )
+            for chunk in chunk_message(reply or ""):
+                await interaction.followup.send(chunk)
+        except asyncio.TimeoutError:
+            pass
 
 
 @tree.command(name="demande", description="Ask the agent for something (look up a posting, draft a reply, a letter...)")
