@@ -11,3 +11,6 @@ apscheduler
 langchain-ollama
 weasyprint
 jinja2
+python-docx
+docxtpl
+fonttools

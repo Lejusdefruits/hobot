@@ -22,8 +22,12 @@ company contacts. Runs on a local LLM (Ollama), no paid API required to work.
   `/demande` covers in more detail is further down.
 - **No CV required to get started**: describe what you're looking for in one
   sentence in Discord ("I'm a Python developer looking for something in
-  Lyon") and it builds a structured profile from that. A CV PDF works too if
-  you'd rather use one.
+  Lyon") and it builds a structured profile from that. Attaching a CV (PDF
+  or `.docx`) via `/profil` works too, and it'll ask follow-up questions if
+  anything looks thin.
+- **Tailors your own CV per offer**, once one's uploaded: edits the summary
+  paragraph (and, carefully, the visible skills) in place on your actual
+  file, same layout, same fonts, nothing else touched, nothing invented.
 - **Never sends an email without confirmation.** A Gmail draft, always. A real
   send only after clicking a "Confirm" button, never the agent on its own.
 
@@ -131,17 +135,23 @@ leaving it running without a terminal open.
 
 ### 5. Set your profile
 
-Two equivalent options, pick one:
+A few equivalent options, pick one:
 
+- **With a CV**, straight from Discord: `/profil` and attach a PDF or `.docx`
+  file. It reads it (PDF or Word, real text or a flattened/scanned page,
+  either way), saves the profile, and follows up with 2-4 questions in the
+  same conversation if something looks thin or missing (no target city
+  detected, a vague target role, very few skills) -- answer normally with
+  `/demande`. This CV is also what per-offer tailoring (see below) edits.
 - **No CV**, straight from Discord: `/demande "I'm a Python developer
   looking for something in Lyon"`. The agent turns that into a structured
   profile (skills, target roles, target locations) and saves it. Adjust it
   any time the same way (`/demande "add Rust to my skills"`, `/demande "I'm
   also open to Bordeaux"`, ...).
-- **With a CV PDF**: set `CV_PATH=/path/to/your_cv.pdf` in `.env`, then run
-  `python -m core.profile` once. The profile gets extracted and saved to the
-  database; no need to do both, either one is enough and they write to the
-  same place.
+- **With a CV, from the command line**: set `CV_PATH=/path/to/your_cv.pdf`
+  in `.env`, then run `python -m core.profile` once -- same reading logic as
+  `/profil`, no Discord round-trip. No need to do more than one of these,
+  they all write to the same place.
 
 From here, discovery runs on the schedule set by
 `DISCOVERY_HOURS_WEEKDAY`/`DISCOVERY_HOURS_WEEKEND` (9am/11am/1pm/3pm/5pm on
@@ -182,6 +192,42 @@ code is ready and reuses the same client id/secret, but France Travail
 requires a manual approval on their end on top of the subscription for this
 particular API; until it's granted, this source just stays inactive without
 blocking anything else (the bot handles that on its own, no error surfaces).
+
+## CV tailoring (optional)
+
+Needs a CV uploaded via `/profil` first (see step 5 above). Once you have
+one, `adapter_cv` (through `/demande`, or automatically alongside the
+auto-drafted cover letter for any offer scoring above
+`DISCOVERY_LETTER_SCORE_THRESHOLD`) generates a tailored version of your
+*own* CV for a specific offer -- same file, same layout, same fonts, same
+colors. Only two things ever change: the profile/summary paragraph, and, if
+your CV's skills section is a plain text list rather than an icon/pill
+layout, which of your real skills fill the visible slots. Everything else
+(name, contact info, dates, job titles, company names, degree names, images,
+section order) stays untouched, and nothing is ever invented: a rewritten
+paragraph or a surfaced skill only ever draws on what's already in your
+profile.
+
+What that promise actually depends on is your CV's own file:
+
+- **A PDF or `.docx` with a real, selectable text layer** (most CVs from
+  Word, Google Docs, LaTeX, and plenty of Canva exports) gets a true in-place
+  edit -- the target text is located, removed, and the new text inserted with
+  matched font, size, and color. `.docx` tailoring additionally needs
+  [LibreOffice](https://www.libreoffice.org/) installed (`soffice` on your
+  `PATH`) to convert the tailored file to a final PDF -- not a Python
+  package, install it the normal way for your OS.
+- **A fully flattened CV** (no selectable text at all -- some Canva "PDF for
+  print" downloads export this way) can't be edited in place; there's no
+  text object to find. This case gets a best-effort partial edit instead: the
+  summary paragraph's region is located visually, covered, and replaced with
+  real, ATS-readable text in a generic font, since the whole point of this
+  feature is a CV that job boards can actually parse, not just one that
+  looks right. It won't match your original font in that region, and only
+  that one region becomes newly readable, not the rest of the page --
+  flagged as a partial edit wherever it's mentioned, not silently blended in
+  with the other case. If you'd rather have full fidelity, re-exporting your
+  CV with text kept intact (or as a `.docx`) sidesteps this entirely.
 
 ## Mail monitoring (optional)
 
@@ -269,7 +315,7 @@ Once the bot is online and the profile is set (step 5 above):
 
 ## Commands
 
-Seven dedicated slash commands, plus `/demande`, which opens up a much wider
+Eight dedicated slash commands, plus `/demande`, which opens up a much wider
 set of tools in plain language:
 
 | Command | What it does |
@@ -279,18 +325,20 @@ set of tools in plain language:
 | `/offre <id>` | Full detail on one posting: description, score, status, last seen live |
 | `/funnel` | Conversion funnel: found → scored → letter → sent → reply → interview |
 | `/applied <id>` | Marks a posting applied (drops it from `/offers`) |
+| `/profil <fichier>` | Sets your profile from an attached CV (PDF or `.docx`) |
 | `/pause` / `/resume` | Stops or restarts scheduled checks (postings + mail) |
 | `/demande "<text>"` | Everything else, see below |
 
 `/demande` is backed by an agent that can, among other things: look up a
 specific posting or run a live search for a city/keyword outside your usual
 coverage, give the full detail on a posting, write or review a cover letter,
-look up a company's contacts (officers, verified emails), exclude or
-re-include a posting, show or edit your profile, give the score breakdown
-across all postings, list applications already sent, list pending mail
-drafts, report how many sends are left for the day, and create/edit/delete a
-draft reply. One plain-language sentence is enough, no need to know a tool's
-exact name for the agent to pick the right one.
+tailor your CV for a specific offer, look up a company's contacts (officers,
+verified emails), exclude or re-include a posting, show or edit your
+profile, give the score breakdown across all postings, list applications
+already sent, list pending mail drafts, report how many sends are left for
+the day, and create/edit/delete a draft reply. One plain-language sentence
+is enough, no need to know a tool's exact name for the agent to pick the
+right one.
 
 ## Architecture
 
@@ -317,6 +365,7 @@ tools/
   email_tools.py      — IMAP/SMTP (optional)
   link_check.py       — flags postings whose link has died
   documents.py        — renders cover letters to PDF
+  cv_tailor.py        — edits your own uploaded CV in place, per offer (optional)
   discord_bot.py       — slash commands + bridge to the agent
 ```
 
@@ -362,8 +411,6 @@ to take it further:
   run to run based on results.
 - No unified quota dashboard across every API (Adzuna has its own monthly
   guard, Hunter/Snov/Pappers don't here).
-- Cover letters render to PDF; the CV itself isn't auto-generated as a
-  tailored PDF per posting.
 - No dedicated command to send already-generated files (CV/letter) back
   through Discord.
 
@@ -372,4 +419,6 @@ postings, sorting them, writing letters, handling mail.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). `assets/fonts/` bundles static instances of
+Montserrat (SIL Open Font License, see `assets/fonts/Montserrat-OFL.txt`),
+used as a font-fidelity fallback by the CV tailoring feature.
