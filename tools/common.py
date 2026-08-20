@@ -51,42 +51,52 @@ def make_offer(*, source, external_id, title, company, location, description, ur
     }
 
 
-def archive_cover_letter(conn: Connection, offer_id: int) -> None:
-    """Moves an offer's cover letter(s) into outputs/archive/ once it's marked
-    applied -- outputs/ then only holds letters for offers still active,
-    nothing is lost, just moved (and the path in the database follows).
-    `conn` must be a connection already opened by the caller (same transaction
-    as the status update)."""
+def _archive_column(conn: Connection, offer_id: int, column: str) -> None:
     rows = conn.execute(
-        "SELECT id, cover_letter_path FROM applications WHERE offer_id = ? AND cover_letter_path IS NOT NULL",
+        f"SELECT id, {column} FROM applications WHERE offer_id = ? AND {column} IS NOT NULL",
         (offer_id,),
     ).fetchall()
     for row in rows:
-        src = Path(row["cover_letter_path"])
+        src = Path(row[column])
         if not src.exists() or src.parent.name == "archive":
             continue
         archive_dir = src.parent / "archive"
         archive_dir.mkdir(parents=True, exist_ok=True)
         dest = archive_dir / src.name
         src.rename(dest)
-        conn.execute("UPDATE applications SET cover_letter_path = ? WHERE id = ?", (str(dest), row["id"]))
+        conn.execute(f"UPDATE applications SET {column} = ? WHERE id = ?", (str(dest), row["id"]))
 
 
-def unarchive_cover_letter(conn: Connection, offer_id: int) -> None:
-    """Reverse of archive_cover_letter: puts the letter back in outputs/ when
-    an 'applied' mark gets undone -- keeps the folder consistent with the
-    actual status."""
+def _unarchive_column(conn: Connection, offer_id: int, column: str) -> None:
     rows = conn.execute(
-        "SELECT id, cover_letter_path FROM applications WHERE offer_id = ? AND cover_letter_path IS NOT NULL",
+        f"SELECT id, {column} FROM applications WHERE offer_id = ? AND {column} IS NOT NULL",
         (offer_id,),
     ).fetchall()
     for row in rows:
-        src = Path(row["cover_letter_path"])
+        src = Path(row[column])
         if not src.exists() or src.parent.name != "archive":
             continue
         dest = src.parent.parent / src.name
         src.rename(dest)
-        conn.execute("UPDATE applications SET cover_letter_path = ? WHERE id = ?", (str(dest), row["id"]))
+        conn.execute(f"UPDATE applications SET {column} = ? WHERE id = ?", (str(dest), row["id"]))
+
+
+def archive_cover_letter(conn: Connection, offer_id: int) -> None:
+    """Moves an offer's cover letter and tailored CV (if any) into
+    outputs/{offer_id}/archive/ once it's marked applied -- outputs/ then
+    only holds files for offers still active, nothing is lost, just moved
+    (and the path in the database follows). `conn` must be a connection
+    already opened by the caller (same transaction as the status update)."""
+    _archive_column(conn, offer_id, "cover_letter_path")
+    _archive_column(conn, offer_id, "cv_path")
+
+
+def unarchive_cover_letter(conn: Connection, offer_id: int) -> None:
+    """Reverse of archive_cover_letter: puts the letter and tailored CV back
+    in outputs/ when an 'applied' mark gets undone -- keeps the folder
+    consistent with the actual status."""
+    _unarchive_column(conn, offer_id, "cover_letter_path")
+    _unarchive_column(conn, offer_id, "cv_path")
 
 
 SPONTANEOUS_LEAD_SOURCES = ("lba_recruiter", "labonneboite")
