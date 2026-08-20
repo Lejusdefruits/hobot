@@ -74,6 +74,16 @@ def _resolve_target_locations(profile: dict) -> list[dict]:
     return resolved or DEFAULT_TARGET_LOCATIONS
 
 
+def _search_terms(profile: dict) -> list[str]:
+    """One query per target role instead of joining them all into a single
+    comma-separated string -- a query like "Backend Developer, Data Analyst"
+    is one literal string match against these APIs/scrapers, not an OR of two
+    terms, so a profile with several target roles was only ever really
+    searching for the first one in practice. Falls back to a single generic
+    term if the profile has no target role set yet."""
+    return [r for r in (profile.get("target_roles") or []) if r] or ["emploi"]
+
+
 # LLM scoring is the bottleneck (~10-30s/offer locally) -- MAX_SCORE_PER_RUN
 # bounds how many unscored offers get processed in THIS run, regardless of how
 # many new offers were found (they all get saved anyway, see
@@ -104,7 +114,7 @@ def fetch_jobspy_node(state: DiscoveryState) -> dict:
         return {"raw_offers": [], "stats": []}
 
     profile = get_user_profile() or {"skills": [], "target_roles": [], "target_locations": []}
-    search_term = ", ".join(profile["target_roles"]) or "emploi"
+    search_terms = _search_terms(profile)
     country = os.environ.get("JOBSPY_COUNTRY", "France")
     # JobSpy geolocates better with the country spelled out in the query --
     # verified live: "Lyon" alone returns 0 results where "Lyon, France" finds some.
@@ -113,11 +123,12 @@ def fetch_jobspy_node(state: DiscoveryState) -> dict:
         for loc in (profile["target_locations"] or [country])
     ]
 
-    _log(f"[fetch] JobSpy ({search_term!r} @ {', '.join(locations)})...")
+    _log(f"[fetch] JobSpy ({search_terms} @ {', '.join(locations)})...")
     try:
         offers = []
-        for location in locations:
-            offers += sources_jobspy.search_offers(search_term=search_term, location=location)
+        for search_term in search_terms:
+            for location in locations:
+                offers += sources_jobspy.search_offers(search_term=search_term, location=location)
         _log(f"[fetch] JobSpy -> {len(offers)} results")
         return {"raw_offers": offers, "stats": [{"source": "jobspy", "n_found": len(offers), "error": None}]}
     except Exception as e:
@@ -146,6 +157,9 @@ def fetch_lba_node(state: DiscoveryState) -> dict:
         return {"raw_offers": [], "stats": [{"source": "lba", "n_found": 0, "error": str(e)}]}
 
 
+ADZUNA_PAGES_PER_LOCATION = int(os.environ.get("ADZUNA_PAGES_PER_LOCATION", "2"))
+
+
 def fetch_adzuna_node(state: DiscoveryState) -> dict:
     if not (sources_adzuna.APP_ID and sources_adzuna.APP_KEY):
         _log("[fetch] Adzuna -> ADZUNA_APP_ID/ADZUNA_APP_KEY not set, source skipped")
@@ -155,12 +169,22 @@ def fetch_adzuna_node(state: DiscoveryState) -> dict:
         _log(f"[fetch] Adzuna -> backed off until {until}, skipped (not attempted)")
         return {"raw_offers": [], "stats": []}
     profile = get_user_profile() or {"target_roles": [], "target_locations": []}
-    query = ", ".join(profile["target_roles"]) or "emploi"
-    _log(f"[fetch] Adzuna ({query!r})...")
+    queries = _search_terms(profile)
+    _log(f"[fetch] Adzuna ({queries})...")
     try:
         offers = []
-        for loc in _resolve_target_locations(profile):
-            offers += sources_adzuna.search_offers(what=query, where=loc["label"], results_per_page=15)
+        for query in queries:
+            for loc in _resolve_target_locations(profile):
+                # Page 1 alone caps out at 15 results/location/query regardless
+                # of how many are actually available -- ADZUNA_PAGES_PER_LOCATION
+                # (2 by default) fetches further pages as long as a full page
+                # suggests there's more (a half-empty page means end of
+                # results, not worth spending another quota call on).
+                for page in range(1, ADZUNA_PAGES_PER_LOCATION + 1):
+                    page_offers = sources_adzuna.search_offers(what=query, where=loc["label"], results_per_page=15, page=page)
+                    offers += page_offers
+                    if len(page_offers) < 15:
+                        break
         _log(f"[fetch] Adzuna -> {len(offers)} results")
         return {"raw_offers": offers, "stats": [{"source": "adzuna", "n_found": len(offers), "error": None}]}
     except Exception as e:
@@ -177,12 +201,13 @@ def fetch_francetravail_node(state: DiscoveryState) -> dict:
         _log(f"[fetch] France Travail -> backed off until {until}, skipped (not attempted)")
         return {"raw_offers": [], "stats": []}
     profile = get_user_profile() or {"target_roles": [], "target_locations": []}
-    query = ", ".join(profile["target_roles"]) or "emploi"
-    _log(f"[fetch] France Travail ({query!r})...")
+    queries = _search_terms(profile)
+    _log(f"[fetch] France Travail ({queries})...")
     try:
         offers = []
-        for loc in _resolve_target_locations(profile):
-            offers += sources_francetravail.search_offers(mots_cles=query, ville=loc["label"])
+        for query in queries:
+            for loc in _resolve_target_locations(profile):
+                offers += sources_francetravail.search_offers(mots_cles=query, ville=loc["label"])
         _log(f"[fetch] France Travail -> {len(offers)} results")
         return {"raw_offers": offers, "stats": [{"source": "francetravail", "n_found": len(offers), "error": None}]}
     except Exception as e:

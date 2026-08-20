@@ -159,6 +159,25 @@ weekdays and 10am/4pm on weekends by default), nothing needs to be triggered
 by hand, though `/ask "find me developer postings in Lyon right now"`
 runs an immediate search if you don't want to wait.
 
+## Job sources and search coverage
+
+`JOBSPY_SITES` (`.env`) controls which sites JobSpy scrapes, comma-separated.
+`indeed` is the default and most reliable. `linkedin` is worth adding
+(`JOBSPY_SITES=indeed,linkedin`) — live-tested, real extra volume, often
+more detailed listings than Indeed for the same search — but JobSpy's own
+upstream docs warn it rate-limits hard (around page 10) without a paid
+proxy, so accept that it may go quiet after a while; nothing needs fixing
+when that happens, it just means fewer results from that one site.
+`glassdoor` and `google` are also technically supported but were found
+broken in testing (glassdoor: location resolution fails outright; google:
+returns 0 results on every query tried) — see `tools/sources_jobspy.py` if
+you want to re-check them yourself later. `zip_recruiter` is untested here.
+
+If your profile has more than one target role, each one is searched
+separately against every enabled source (not merged into a single combined
+query) — feel free to list a few rather than trying to phrase one query that
+covers all of them.
+
 ## French job sources (optional)
 
 JobSpy alone already works with nothing else configured. These three sources

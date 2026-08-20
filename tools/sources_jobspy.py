@@ -1,10 +1,20 @@
 """JobSpy connector -- multi-site scraping, no API key required.
 
 JOBSPY_SITES (.env) controls which sites get queried. Indeed remains the most
-reliable default: Glassdoor resists scraping particularly well (JobSpy's
-location resolution against it fails consistently) -- try other sites at your
-own risk if you want to widen the net (site_name also accepts "linkedin",
-"zip_recruiter", "google").
+reliable default. Glassdoor resists scraping particularly well (JobSpy's
+location resolution against it fails consistently). "google" was tested live
+(2026-08-21): it returns 0 results on every query tried, French and English,
+including JobSpy's own example query verbatim -- no CAPTCHA/consent wall
+detected either, which points to a scraper broken by a Google markup change
+rather than a query-format problem. Left as a supported value (site_name
+accepts it) in case it starts working again, but don't expect results from it
+today. "linkedin" was also tested live the same day and DOES work --
+real results, no CAPTCHA -- but JobSpy's own upstream docs warn it rate-limits
+hard (around page 10) without a paid proxy, the same wall Glassdoor already
+hit here. Adding it to JOBSPY_SITES is a real, accepted trade-off: more
+volume now, real risk it stops working later without any special handling
+needed (a source going quiet just means fewer results from it, same as any
+other JobSpy site failing).
 
 Cadence: see DISCOVERY_HOURS_WEEKDAY/WEEKEND and JOBSPY_JITTER_MIN in .env
 (spaced out more than the official APIs -- higher ban risk than a plain API
