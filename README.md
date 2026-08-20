@@ -14,16 +14,16 @@ company contacts. Runs on a local LLM (Ollama), no paid API required to work.
 - **Checks that postings are still live**: one that's disappeared from the
   source site (position filled, listing pulled) gets flagged and dropped
   instead of sitting in the list looking just as valid as everything else.
-- **Runs from Discord**: `/status`, `/offers`, `/offre <id>`, `/applied`,
+- **Runs from Discord**: `/status`, `/offers`, `/offer <id>`, `/applied`,
   `/funnel` (where things stall in the application process), `/pause`,
-  `/resume`, and `/demande "<anything>"` for everything else: looking up a
+  `/resume`, and `/ask "<anything>"` for everything else: looking up a
   specific posting, excluding a listing, checking the score breakdown,
   drafting or fixing an email, changing your profile on the fly. What
-  `/demande` covers in more detail is further down.
+  `/ask` covers in more detail is further down.
 - **No CV required to get started**: describe what you're looking for in one
   sentence in Discord ("I'm a Python developer looking for something in
   Lyon") and it builds a structured profile from that. Attaching a CV (PDF
-  or `.docx`) via `/profil` works too, and it'll ask follow-up questions if
+  or `.docx`) via `/profile` works too, and it'll ask follow-up questions if
   anything looks thin.
 - **Tailors your own CV per offer**, once one's uploaded: edits the summary
   paragraph (and, carefully, the visible skills) in place on your actual
@@ -137,26 +137,26 @@ leaving it running without a terminal open.
 
 A few equivalent options, pick one:
 
-- **With a CV**, straight from Discord: `/profil` and attach a PDF or `.docx`
+- **With a CV**, straight from Discord: `/profile` and attach a PDF or `.docx`
   file. It reads it (PDF or Word, real text or a flattened/scanned page,
   either way), saves the profile, and follows up with 2-4 questions in the
   same conversation if something looks thin or missing (no target city
   detected, a vague target role, very few skills) -- answer normally with
-  `/demande`. This CV is also what per-offer tailoring (see below) edits.
-- **No CV**, straight from Discord: `/demande "I'm a Python developer
+  `/ask`. This CV is also what per-offer tailoring (see below) edits.
+- **No CV**, straight from Discord: `/ask "I'm a Python developer
   looking for something in Lyon"`. The agent turns that into a structured
   profile (skills, target roles, target locations) and saves it. Adjust it
-  any time the same way (`/demande "add Rust to my skills"`, `/demande "I'm
+  any time the same way (`/ask "add Rust to my skills"`, `/ask "I'm
   also open to Bordeaux"`, ...).
 - **With a CV, from the command line**: set `CV_PATH=/path/to/your_cv.pdf`
   in `.env`, then run `python -m core.profile` once -- same reading logic as
-  `/profil`, no Discord round-trip. No need to do more than one of these,
+  `/profile`, no Discord round-trip. No need to do more than one of these,
   they all write to the same place.
 
 From here, discovery runs on the schedule set by
 `DISCOVERY_HOURS_WEEKDAY`/`DISCOVERY_HOURS_WEEKEND` (9am/11am/1pm/3pm/5pm on
 weekdays and 10am/4pm on weekends by default), nothing needs to be triggered
-by hand, though `/demande "find me developer postings in Lyon right now"`
+by hand, though `/ask "find me developer postings in Lyon right now"`
 runs an immediate search if you don't want to wait.
 
 ## French job sources (optional)
@@ -195,8 +195,8 @@ blocking anything else (the bot handles that on its own, no error surfaces).
 
 ## CV tailoring (optional)
 
-Needs a CV uploaded via `/profil` first (see step 5 above). Once you have
-one, `adapter_cv` (through `/demande`, or automatically alongside the
+Needs a CV uploaded via `/profile` first (see step 5 above). Once you have
+one, `adapter_cv` (through `/ask`, or automatically alongside the
 auto-drafted cover letter for any offer scoring above
 `DISCOVERY_LETTER_SCORE_THRESHOLD`) generates a tailored version of your
 *own* CV for a specific offer -- same file, same layout, same fonts, same
@@ -308,28 +308,28 @@ Once the bot is online and the profile is set (step 5 above):
   waiting for the first cycle.
 - `/offers` lists the best postings found so far, with a button on each one
   to mark it applied directly.
-- `/offre 12` (swap 12 for a real number) gives the full detail on one
+- `/offer 12` (swap 12 for a real number) gives the full detail on one
   posting: description, score, reasoning, status, last time it was seen live.
-- `/demande "..."` takes pretty much any request in plain language, see the
+- `/ask "..."` takes pretty much any request in plain language, see the
   list below for what that actually covers.
 
 ## Commands
 
-Eight dedicated slash commands, plus `/demande`, which opens up a much wider
+Eight dedicated slash commands, plus `/ask`, which opens up a much wider
 set of tools in plain language:
 
 | Command | What it does |
 |---|---|
 | `/status` | Summary of the last discovery/mail run and when the next one is due |
 | `/offers` | Best active postings, with an "already applied" button on each |
-| `/offre <id>` | Full detail on one posting: description, score, status, last seen live |
+| `/offer <id>` | Full detail on one posting: description, score, status, last seen live |
 | `/funnel` | Conversion funnel: found → scored → letter → sent → reply → interview |
 | `/applied <id>` | Marks a posting applied (drops it from `/offers`) |
-| `/profil <fichier>` | Sets your profile from an attached CV (PDF or `.docx`) |
+| `/profile <file>` | Sets your profile from an attached CV (PDF or `.docx`) |
 | `/pause` / `/resume` | Stops or restarts scheduled checks (postings + mail) |
-| `/demande "<text>"` | Everything else, see below |
+| `/ask "<text>"` | Everything else, see below |
 
-`/demande` is backed by an agent that can, among other things: look up a
+`/ask` is backed by an agent that can, among other things: look up a
 specific posting or run a live search for a city/keyword outside your usual
 coverage, give the full detail on a posting, write or review a cover letter,
 tailor your CV for a specific offer, look up a company's contacts (officers,
@@ -347,7 +347,7 @@ daemon.py            — single process: scheduler (APScheduler) + Discord bot
 graphs/
   discovery_graph.py  — fetch (JobSpy + French sources) -> dedup -> score (LLM) -> letters -> log
   email_graph.py      — fetch mail -> classify (LLM) -> draft replies
-  chat_agent.py        — the agent behind /demande (ReAct, tool-calling)
+  chat_agent.py        — the agent behind /ask (ReAct, tool-calling)
 core/
   db.py               — SQLite schema (offers, applications, user_profile...)
   llm.py              — shared Ollama client
@@ -378,7 +378,7 @@ applications and emails stay drafts until an explicit human action.
 
 JobSpy does real scraping, not an API call: broad, generic target roles
 ("backend developer" rather than a very specific title) tend to give better
-results. `modifier_profil`/`definir_profil` (via `/demande`) let you adjust
+results. `modifier_profil`/`definir_profil` (via `/ask`) let you adjust
 that at any point.
 
 ## Design and safety

@@ -4,7 +4,7 @@ watching + a weekly digest, all scheduled, plus the Discord bot.
 One process: APScheduler (BackgroundScheduler, its own threads) for the
 scheduled runs + the Discord client in the main asyncio loop. Both run
 independently in the same process -- the scheduler never blocks the Discord
-event loop, so /status, /offers, /demande stay responsive while a discovery
+event loop, so /status, /offers, /ask stay responsive while a discovery
 or email-watch run works in the background.
 
 Email watching is only scheduled if at least one GMAIL_ACCOUNT_i is set in

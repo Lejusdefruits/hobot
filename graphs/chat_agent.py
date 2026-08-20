@@ -1,7 +1,7 @@
-"""chat_agent -- the conversational agent behind /demande on Discord.
+"""chat_agent -- the conversational agent behind /ask on Discord.
 
 A ReAct agent (local LLM via Ollama, native tool-calling) triggered by a
-Discord command (/demande). This is the ONLY path that can lead to a real
+Discord command (/ask). This is the ONLY path that can lead to a real
 email send, and only after explicit confirmation:
 - `creer_brouillon`: always allowed, no confirmation needed.
 - `preparer_envoi_mail`: ONLY prepares, never connects to SMTP itself.
@@ -443,7 +443,7 @@ def adapter_cv(offer_id: int) -> str:
     one specific offer -- same file, same layout, same fonts, only the
     profile/summary paragraph (and, if the CV's skills section is a plain
     text list, which real skills fill the visible slots) changes. Requires
-    a CV to have been uploaded first via /profil; never invents a skill,
+    a CV to have been uploaded first via /profile; never invents a skill,
     project, or experience not already in the profile. Use this after
     scoring an offer highly, alongside (not instead of)
     sauvegarder_lettre_motivation."""
@@ -456,7 +456,7 @@ def adapter_cv(offer_id: int) -> str:
 
     path = tailor_cv(offer_id, row["title"], row["description"])
     if path is None:
-        return ("Couldn't tailor a CV for this offer -- either no CV was uploaded yet (use /profil), "
+        return ("Couldn't tailor a CV for this offer -- either no CV was uploaded yet (use /profile), "
                 "or the tailoring attempt failed. The cover letter isn't affected.")
 
     with get_connection() as conn:
@@ -805,7 +805,7 @@ Non-negotiable rules:
   X"), use lire_lettre_motivation and paste its text into your reply -- never
   just give the file path.
 - If the user asks for a tailored CV for an offer (or you're drafting a
-  letter for a strong match and a CV has been uploaded via /profil), call
+  letter for a strong match and a CV has been uploaded via /profile), call
   adapter_cv -- it edits their own uploaded CV in place, do not try to write
   or describe CV content yourself.
 - Reply in English, concisely.

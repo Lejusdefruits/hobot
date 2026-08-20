@@ -1,5 +1,5 @@
 """Discord bot: read-only base commands (/status, /offers, /applied, /pause,
-/resume) plus /demande, which wires in the conversational agent (chat_agent.py),
+/resume) plus /ask, which wires in the conversational agent (chat_agent.py),
 the only path that can send a real email, and only through the confirmation
 button below (never the agent on its own).
 
@@ -205,9 +205,9 @@ STATUS_LABELS = {
 }
 
 
-@tree.command(name="offre", description="Full detail on one posting (description, score, status)")
+@tree.command(name="offer", description="Full detail on one posting (description, score, status)")
 @app_commands.describe(offer_id="Posting number, shown with # in /offers")
-async def offre(interaction: discord.Interaction, offer_id: int):
+async def offer_cmd(interaction: discord.Interaction, offer_id: int):
     with get_connection() as conn:
         row = conn.execute(
             "SELECT title, company, location, description, url, score, score_reason, status, "
@@ -376,13 +376,13 @@ class ConfirmSendView(discord.ui.View):
 AGENT_TIMEOUT_SECONDS = int(os.environ.get("AGENT_TIMEOUT_SECONDS", "180"))
 
 
-@tree.command(name="profil", description="Set your profile from a CV file (PDF or .docx)")
-@app_commands.describe(fichier="Your CV, as a PDF or .docx file")
-async def profil(interaction: discord.Interaction, fichier: discord.Attachment):
+@tree.command(name="profile", description="Set your profile from a CV file (PDF or .docx)")
+@app_commands.describe(file="Your CV, as a PDF or .docx file")
+async def profile_cmd(interaction: discord.Interaction, file: discord.Attachment):
     from core import profile as profile_mod
 
     await interaction.response.defer()
-    suffix = Path(fichier.filename).suffix.lower()
+    suffix = Path(file.filename).suffix.lower()
     if suffix not in (".pdf", ".docx"):
         await interaction.followup.send(embed=base_embed(
             "Unsupported file", color=COLOR_ERROR,
@@ -391,7 +391,7 @@ async def profil(interaction: discord.Interaction, fichier: discord.Attachment):
         return
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        await fichier.save(Path(tmp.name))
+        await file.save(Path(tmp.name))
         tmp_path = Path(tmp.name)
 
     try:
@@ -438,14 +438,14 @@ async def profil(interaction: discord.Interaction, fichier: discord.Attachment):
             pass
 
 
-@tree.command(name="demande", description="Ask the agent for something (look up a posting, draft a reply, a letter...)")
-@app_commands.describe(texte="Your request, in plain language")
-async def demande(interaction: discord.Interaction, texte: str):
+@tree.command(name="ask", description="Ask the agent for something (look up a posting, draft a reply, a letter...)")
+@app_commands.describe(text="Your request, in plain language")
+async def ask(interaction: discord.Interaction, text: str):
     await interaction.response.defer()  # the agent (local LLM) can take a few seconds
     before = set(PENDING_SENDS.keys())
     try:
         reponse = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, agent_ask, texte, str(interaction.user.id)),
+            asyncio.get_event_loop().run_in_executor(None, agent_ask, text, str(interaction.user.id)),
             timeout=AGENT_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:

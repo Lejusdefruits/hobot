@@ -26,7 +26,7 @@ PROFILE_DIR = Path(__file__).resolve().parent.parent / os.environ.get("HOBOT_PRO
 CvFormat = Literal["pdf_text", "pdf_image", "docx"]
 
 # Below this many detected items across skills/target_roles/target_locations,
-# /profil follows up with clarifying questions instead of silently accepting
+# /profile follows up with clarifying questions instead of silently accepting
 # a thin profile -- see detect_gaps().
 MIN_SKILLS_BEFORE_GAP = 2
 
@@ -141,7 +141,7 @@ def parse_cv(path: Path = CV_PATH, fmt: CvFormat | None = None) -> dict:
 
 def detect_gaps(profile: dict) -> list[str]:
     """Deterministic, no LLM call -- what's thin or missing in an extracted
-    profile, for /profil to follow up on. Kept as plain checks on purpose:
+    profile, for /profile to follow up on. Kept as plain checks on purpose:
     reliably noticing what's missing from a JSON blob and phrasing good
     questions about it in one step asks more of a small local model than it
     can be trusted with (see the follow-up-questions flow in
@@ -161,7 +161,7 @@ def detect_gaps(profile: dict) -> list[str]:
 def save_profile_source(path: Path, fmt: CvFormat) -> Path:
     """Copies the uploaded original into PROFILE_DIR and records where it
     lives -- the tailoring engine (tools/cv_tailor.py) edits THIS file, not
-    a re-derived template, so it has to survive past the /profil command's
+    a re-derived template, so it has to survive past the /profile command's
     own temp download. Requires save_profile() to have already created the
     user_profile row (id=1)."""
     from core.db import get_connection
@@ -220,7 +220,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     if not CV_PATH or not CV_PATH.exists():
         print("CV_PATH isn't set or the file doesn't exist (see .env) -- "
-              "you can also set your profile directly in Discord via /demande "
+              "you can also set your profile directly in Discord via /ask "
               "\"definir_profil: <your text>\".")
         sys.exit(1)
     fmt = detect_format(CV_PATH)

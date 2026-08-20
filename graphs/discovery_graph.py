@@ -566,7 +566,7 @@ def draft_letters_node(state: DiscoveryState) -> dict:
                     (offer["id"], str(path)),
                 )
                 # Best-effort, never blocks a letter that already succeeded --
-                # returns None (no CV uploaded via /profil yet, or the
+                # returns None (no CV uploaded via /profile yet, or the
                 # tailoring attempt itself failed) far more often than not on
                 # a fresh install, that's expected, not an error.
                 from tools.cv_tailor import tailor_cv
