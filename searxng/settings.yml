@@ -1,0 +1,55 @@
+# SearXNG settings — self-hosted meta-search
+# JSON format enabled, internal rate limiter disabled
+
+use_default_settings: true
+
+search:
+  formats: [html, json]
+  default_lang: en
+  autocomplete: ""
+  default_categories: [general]
+
+server:
+  # "ultrasecretkey" is the placeholder the official searxng/searxng Docker
+  # image's entrypoint automatically swaps for the SEARXNG_SECRET environment
+  # variable (see docker-compose.yml) -- don't change it by hand here, or the
+  # automatic substitution stops firing.
+  secret_key: "ultrasecretkey"
+  limiter: false       # internal rate limiter disabled
+  image_proxy: false
+  bind_address: "0.0.0.0"
+
+ui:
+  default_locale: en
+
+# Engines: keep Google + Bing + DuckDuckGo + Qwant
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+    disabled: false
+  - name: bing
+    engine: bing
+    shortcut: b
+    disabled: false
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+  - name: qwant
+    engine: qwant
+    shortcut: qw
+    disabled: false
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: false
+  - name: github
+    engine: github
+    shortcut: gh
+    disabled: false
+
+outgoing:
+  request_timeout: 15
+  max_request_timeout: 30
+  useragent_suffix: "hobot"

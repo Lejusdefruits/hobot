@@ -1,0 +1,28 @@
+[Unit]
+Description=hobot — veille d'offres + bot Discord
+After=network-online.target ollama.service
+
+[Service]
+# Remplace par le chemin réel où tu as cloné le repo, puis :
+#   mkdir -p ~/.config/systemd/user && cp systemd/hobot.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now hobot
+#   loginctl enable-linger $USER   # pour que ça tourne même sans session ouverte
+WorkingDirectory=/chemin/vers/hobot
+ExecStart=/chemin/vers/hobot/.venv/bin/python -u daemon.py
+
+# Sécurité : borne la RAM/CPU pour qu'un run qui dérape ne puisse jamais faire
+# ramer/planter le reste de la machine.
+MemoryMax=2G
+CPUQuota=150%
+Nice=10
+
+# Redémarre après un crash, mais s'arrête de réessayer après 5 échecs en 10 min
+# plutôt que de boucler indéfiniment.
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Install]
+WantedBy=default.target

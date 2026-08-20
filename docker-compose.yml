@@ -1,0 +1,11 @@
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: hobot_searxng
+    restart: unless-stopped
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET:?Set SEARXNG_SECRET in .env (any random string)}

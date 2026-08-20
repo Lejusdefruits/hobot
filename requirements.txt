@@ -1,0 +1,13 @@
+python-dotenv
+ollama
+pypdf
+pymupdf
+langgraph
+requests
+python-jobspy
+imap_tools
+discord.py
+apscheduler
+langchain-ollama
+weasyprint
+jinja2
