@@ -1,0 +1,40 @@
+@page {
+    size: A4;
+    margin: 2.2cm 2cm;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: "DejaVu Sans", "Helvetica Neue", Arial, sans-serif;
+    color: #1a1a1a;
+    font-size: 10.5pt;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.letter-header {
+    margin-bottom: 28px;
+}
+
+.letter-header .name {
+    font-size: 13pt;
+    font-weight: bold;
+}
+
+.letter-date {
+    text-align: right;
+    margin-bottom: 20px;
+    font-size: 9.5pt;
+    color: #444;
+}
+
+.letter-body {
+    font-size: 10.5pt;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    text-align: justify;
+}
