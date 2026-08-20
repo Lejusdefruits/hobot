@@ -1,4 +1,5 @@
-"""Parses a candidate's profile into user_profile, from a CV (PDF) or free text.
+"""Parses a candidate's profile into user_profile, from a CV (PDF or .docx) or
+free text.
 
 Deliberately kept separate from any LangGraph graph: it runs once (or on
 demand, through chat), never inside the scheduled loop. The structured
@@ -7,16 +8,27 @@ afterward.
 """
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
+from typing import Literal
 
 import pymupdf as fitz
 from dotenv import load_dotenv
+from docx import Document
 from pypdf import PdfReader
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 CV_PATH = Path(os.environ.get("CV_PATH", ""))
+PROFILE_DIR = Path(__file__).resolve().parent.parent / os.environ.get("HOBOT_PROFILE_DIR", "profile_source")
+
+CvFormat = Literal["pdf_text", "pdf_image", "docx"]
+
+# Below this many detected items across skills/target_roles/target_locations,
+# /profil follows up with clarifying questions instead of silently accepting
+# a thin profile -- see detect_gaps().
+MIN_SKILLS_BEFORE_GAP = 2
 
 _SCHEMA = """{{
   "full_name": "candidate's first + last name, or null if absent from the text",
@@ -80,6 +92,11 @@ def extract_text(pdf_path: Path) -> str:
     return "\n".join(page.extract_text() or "" for page in reader.pages).strip()
 
 
+def extract_docx_text(docx_path: Path) -> str:
+    doc = Document(str(docx_path))
+    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+
 def render_page_images(pdf_path: Path, dpi: int = 200) -> list[bytes]:
     """CV with no text layer (a Canva/design export) -> rasterize it and use
     the model's vision capability instead of adding an OCR dependency."""
@@ -92,19 +109,73 @@ def render_page_images(pdf_path: Path, dpi: int = 200) -> list[bytes]:
         doc.close()
 
 
-def parse_cv(pdf_path: Path = CV_PATH) -> dict:
+def detect_format(path: Path) -> CvFormat:
+    if path.suffix.lower() == ".docx":
+        return "docx"
+    return "pdf_text" if extract_text(path) else "pdf_image"
+
+
+def parse_cv(path: Path = CV_PATH, fmt: CvFormat | None = None) -> dict:
+    """Dispatches on the CV's actual format -- a real text layer (PDF or
+    .docx) goes straight to the LLM as text, a flattened/rasterized PDF
+    (no text layer at all, common for a Canva-style export) falls back to
+    reading the page images with the model's vision capability."""
     from core.llm import chat_json
 
-    cv_text = extract_text(pdf_path)
+    fmt = fmt or detect_format(path)
 
-    if cv_text:
+    if fmt == "docx":
+        cv_text = extract_docx_text(path)
+        profile = chat_json(EXTRACTION_PROMPT.format(cv_text=cv_text))
+    elif fmt == "pdf_text":
+        cv_text = extract_text(path)
         profile = chat_json(EXTRACTION_PROMPT.format(cv_text=cv_text))
     else:
-        images = render_page_images(pdf_path)
+        cv_text = ""
+        images = render_page_images(path)
         profile = chat_json(VISION_PROMPT, images=images)
 
     profile.setdefault("raw_text", cv_text)
     return profile
+
+
+def detect_gaps(profile: dict) -> list[str]:
+    """Deterministic, no LLM call -- what's thin or missing in an extracted
+    profile, for /profil to follow up on. Kept as plain checks on purpose:
+    reliably noticing what's missing from a JSON blob and phrasing good
+    questions about it in one step asks more of a small local model than it
+    can be trusted with (see the follow-up-questions flow in
+    tools/discord_bot.py) -- computing the gaps here removes that risk, the
+    model's only job afterward is to phrase them."""
+    gaps = []
+    if not profile.get("target_locations"):
+        gaps.append("no target location detected")
+    target_roles = profile.get("target_roles") or []
+    if not target_roles or (len(target_roles) == 1 and len(target_roles[0].split()) <= 1):
+        gaps.append("target role is missing or too vague")
+    if len(profile.get("skills") or []) < MIN_SKILLS_BEFORE_GAP:
+        gaps.append("very few skills detected")
+    return gaps
+
+
+def save_profile_source(path: Path, fmt: CvFormat) -> Path:
+    """Copies the uploaded original into PROFILE_DIR and records where it
+    lives -- the tailoring engine (tools/cv_tailor.py) edits THIS file, not
+    a re-derived template, so it has to survive past the /profil command's
+    own temp download. Requires save_profile() to have already created the
+    user_profile row (id=1)."""
+    from core.db import get_connection
+
+    PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    dest = PROFILE_DIR / f"original{path.suffix.lower()}"
+    shutil.copyfile(path, dest)
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE user_profile SET cv_source_path = ?, cv_format = ?, cv_uploaded_at = datetime('now') "
+            "WHERE id = 1",
+            (str(dest), fmt),
+        )
+    return dest
 
 
 def parse_text(texte: str) -> dict:
@@ -152,10 +223,15 @@ if __name__ == "__main__":
               "you can also set your profile directly in Discord via /demande "
               "\"definir_profil: <your text>\".")
         sys.exit(1)
-    profile = parse_cv()
+    fmt = detect_format(CV_PATH)
+    profile = parse_cv(CV_PATH, fmt=fmt)
     save_profile(profile)
-    print(f"Profile extracted from {CV_PATH} and saved to user_profile.\n")
+    save_profile_source(CV_PATH, fmt)
+    print(f"Profile extracted from {CV_PATH} ({fmt}) and saved to user_profile.\n")
     print("Name:", profile.get("full_name") or "(not detected)")
     print("Skills:", ", ".join(profile.get("skills", [])) or "(none)")
     print("Target roles:", ", ".join(profile.get("target_roles", [])) or "(none)")
     print("Target locations:", ", ".join(profile.get("target_locations", [])) or "(none)")
+    gaps = detect_gaps(profile)
+    if gaps:
+        print("\nStill thin:", ", ".join(gaps))

@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS applications (
     offer_id            INTEGER REFERENCES offers(id),
     thread_id           TEXT,
     cover_letter_path   TEXT,
+    cv_path             TEXT,
     drafted_at          TEXT NOT NULL DEFAULT (datetime('now')),
     sent_at             TEXT,
     status              TEXT NOT NULL DEFAULT 'draft'
@@ -115,6 +116,9 @@ CREATE TABLE IF NOT EXISTS user_profile (
     education       TEXT,
     target_roles    TEXT,
     target_locations TEXT,
+    cv_source_path  TEXT,
+    cv_format       TEXT,
+    cv_uploaded_at  TEXT,
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -190,6 +194,10 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
         profile_cols = {row["name"] for row in conn.execute("PRAGMA table_info(user_profile)")}
         if "full_name" not in profile_cols:
             conn.execute("ALTER TABLE user_profile ADD COLUMN full_name TEXT")
+        if "cv_source_path" not in profile_cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN cv_source_path TEXT")
+            conn.execute("ALTER TABLE user_profile ADD COLUMN cv_format TEXT")
+            conn.execute("ALTER TABLE user_profile ADD COLUMN cv_uploaded_at TEXT")
 
     if "applications" in tables:
         app_cols = {row["name"] for row in conn.execute("PRAGMA table_info(applications)")}
@@ -199,6 +207,8 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
             # pre-existing draft as "pending for weeks" on day one.
             conn.execute("ALTER TABLE applications ADD COLUMN drafted_at TEXT")
             conn.execute("UPDATE applications SET drafted_at = datetime('now') WHERE drafted_at IS NULL")
+        if "cv_path" not in app_cols:
+            conn.execute("ALTER TABLE applications ADD COLUMN cv_path TEXT")
     conn.commit()
 
 
