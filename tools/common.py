@@ -81,6 +81,34 @@ def _unarchive_column(conn: Connection, offer_id: int, column: str) -> None:
         conn.execute(f"UPDATE applications SET {column} = ? WHERE id = ?", (str(dest), row["id"]))
 
 
+def upsert_application(conn: Connection, offer_id: int, defaults: dict | None = None, **fields) -> int:
+    """Every offer gets at most one row here -- a cover letter saved, a CV
+    tailored, and an applied mark are all updates to the SAME row, not
+    separate events. Before this, each write path blindly INSERTed its own
+    row instead of checking for one already there for this offer_id
+    (confirmed live: a letter saved after a CV had already been tailored for
+    the same offer left the CV path stranded on an orphaned row /files could
+    never find, and /applications listed the same offer twice). `defaults`
+    only apply when the row is created for the first time (e.g.
+    status='draft'); an update that omits a column leaves its current value
+    alone rather than resetting it. Returns the row id either way."""
+    existing = conn.execute(
+        "SELECT id FROM applications WHERE offer_id = ? ORDER BY id DESC LIMIT 1", (offer_id,),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            f"UPDATE applications SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+            (*fields.values(), existing["id"]),
+        )
+        return existing["id"]
+    all_fields = {**(defaults or {}), **fields}
+    cur = conn.execute(
+        f"INSERT INTO applications (offer_id, {', '.join(all_fields)}) VALUES (?, {', '.join('?' for _ in all_fields)})",
+        (offer_id, *all_fields.values()),
+    )
+    return cur.lastrowid
+
+
 def archive_cover_letter(conn: Connection, offer_id: int) -> None:
     """Moves an offer's cover letter and tailored CV (if any) into
     outputs/{offer_id}/archive/ once it's marked applied -- outputs/ then

@@ -533,10 +533,7 @@ def sauvegarder_lettre_motivation(offer_id: int, contenu: str) -> str:
     profile = get_user_profile() or {}
     path = generate_letter_pdf(offer_id, contenu, full_name=profile.get("full_name"))
     with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO applications (offer_id, cover_letter_path, status) VALUES (?, ?, 'draft')",
-            (offer_id, str(path)),
-        )
+        common.upsert_application(conn, offer_id, defaults={"status": "draft"}, cover_letter_path=str(path))
     return f"Letter saved to {path}."
 
 
@@ -563,16 +560,7 @@ def adapter_cv(offer_id: int) -> str:
                 "or the tailoring attempt failed. The cover letter isn't affected.")
 
     with get_connection() as conn:
-        existing = conn.execute(
-            "SELECT id FROM applications WHERE offer_id = ? ORDER BY id DESC LIMIT 1", (offer_id,),
-        ).fetchone()
-        if existing:
-            conn.execute("UPDATE applications SET cv_path = ? WHERE id = ?", (str(path), existing["id"]))
-        else:
-            conn.execute(
-                "INSERT INTO applications (offer_id, cv_path, status) VALUES (?, ?, 'draft')",
-                (offer_id, str(path)),
-            )
+        common.upsert_application(conn, offer_id, defaults={"status": "draft"}, cv_path=str(path))
     return f"Tailored CV saved to {path}."
 
 
@@ -610,10 +598,8 @@ def marquer_postule(offer_id: int) -> str:
         if row["status"] == "applied":
             return f"#{offer_id} was already marked applied: {row['title']} -- {row['company']}."
         conn.execute("UPDATE offers SET status = 'applied' WHERE id = ?", (offer_id,))
-        conn.execute(
-            "INSERT INTO applications (offer_id, status, sent_at) VALUES (?, 'applied', datetime('now'))",
-            (offer_id,),
-        )
+        row_id = common.upsert_application(conn, offer_id, status="applied")
+        conn.execute("UPDATE applications SET sent_at = datetime('now') WHERE id = ?", (row_id,))
         common.archive_cover_letter(conn, offer_id)
     return f"#{offer_id} marked applied: {row['title']} -- {row['company']}."
 
@@ -632,7 +618,14 @@ def annuler_postule(offer_id: int) -> str:
         if row["status"] != "applied":
             return f"#{offer_id} isn't marked applied (current status: {row['status']})."
         conn.execute("UPDATE offers SET status = 'scored' WHERE id = ?", (offer_id,))
-        conn.execute("DELETE FROM applications WHERE offer_id = ? AND status = 'applied'", (offer_id,))
+        # Reverts the row to draft rather than deleting it -- since marquer_postule
+        # now updates the SAME row a letter/CV was saved to (see
+        # common.upsert_application), deleting it here would orphan those file
+        # paths even though the files themselves are un-archived right below.
+        conn.execute(
+            "UPDATE applications SET status = 'draft', sent_at = NULL WHERE offer_id = ? AND status = 'applied'",
+            (offer_id,),
+        )
         common.unarchive_cover_letter(conn, offer_id)
     return f"#{offer_id} is no longer marked applied: {row['title']} -- {row['company']}."
 
