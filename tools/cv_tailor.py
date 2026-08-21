@@ -289,10 +289,17 @@ def _wrap_and_insert(page, bbox: fitz.Rect, text: str, fontfile: Path, fontsize:
 def _find_summary_paragraph(blocks: list[dict]) -> list[dict] | None:
     """Groups consecutive, vertically-adjacent, same-column blocks into runs
     and returns the first one that reads as actual prose -- deliberately
-    NOT "the one block over N characters": on a real CV, each visual LINE
-    routinely comes back as its own separate PyMuPDF block (confirmed on a
-    real file), so a multi-line summary paragraph never appears as a single
-    long block to begin with.
+    NOT "the one block over N characters" on its own, because block
+    granularity isn't consistent across CV generators: on some files each
+    visual LINE comes back as its own PyMuPDF block, so the paragraph only
+    shows up once several get run together; on others (confirmed on a real
+    Canva-style export) the whole paragraph is already one block with its
+    lines pre-joined. Requiring 2+ blocks to accept a run handled the first
+    case but silently discarded the second -- a single-block paragraph never
+    flushed, so the scan fell through to the next thing that happened to
+    look like multi-line prose (on that real file: the address/phone/email
+    block under "contactez-moi"), and that's what got overwritten instead.
+    Length alone is the right test in both cases.
 
     Starting a run needs a real prose-looking line (several words, not
     all-caps, so a short label like "PROFIL" can't kick one off), but once
@@ -306,7 +313,7 @@ def _find_summary_paragraph(blocks: list[dict]) -> list[dict] | None:
 
     def flush() -> list[dict] | None:
         combined = " ".join(r["text"] for r in run)
-        return run if len(combined) > 80 and len(run) >= 2 else None
+        return run if len(combined) > 80 else None
 
     for b in ordered:
         text = b["text"]
