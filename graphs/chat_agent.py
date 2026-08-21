@@ -9,13 +9,18 @@ email send, and only after explicit confirmation:
   clicking that button (a human action, not the agent) that actually calls
   email_tools.envoyer_ou_repondre_email.
 
-Conversation memory lives in RAM (InMemorySaver, thread_id = Discord user):
-lost on process restart, same as PENDING_SENDS below -- fine for personal
-use, real persistence would be the next step for multi-user use.
+Conversation memory persists in checkpoints.db (SqliteSaver, thread_id =
+Discord user id, or "web" for the dashboard's single-user chat session) --
+survives a process restart, and is shared automatically between Discord and
+the web dashboard since both run in the same process against the same
+SqliteSaver instance (no sync code needed). PENDING_SENDS below is still
+RAM-only and does NOT survive a restart -- an unconfirmed send proposal is
+lost if the process restarts before it's confirmed, same as before.
 """
 import json
 import os
 import re
+import sqlite3
 import sys
 import uuid
 from pathlib import Path
@@ -24,15 +29,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from langchain_core.messages import trim_messages
 from langchain_core.tools import tool
-from langchain_ollama import ChatOllama
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.prebuilt import create_react_agent
 
 from core.db import get_connection, get_user_profile
+from core.llm_provider import get_chat_model
 from tools import common
 
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3.8")
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 GMAIL_DAILY_SEND_CAP = int(os.environ.get("GMAIL_DAILY_SEND_CAP", "15"))
 
 # Pending send proposals waiting on a human click -- see the module docstring.
@@ -893,12 +896,74 @@ def supprimer_brouillon_mail(uid: str) -> str:
 def preparer_envoi_mail(destinataire: str, sujet: str, contenu: str) -> str:
     """Prepares the REAL send of an email (not a draft) -- use this ONLY if
     explicitly asked to send (not just reply/prepare). Sends strictly
-    nothing: human confirmation (a Discord button) is required before any
-    SMTP send."""
+    nothing: explicit human confirmation is required before any SMTP send,
+    through whichever interface the user is on (a "Confirm send" button on
+    Discord, or the same on the web dashboard's chat page)."""
     pending_id = str(uuid.uuid4())[:8]
     PENDING_SENDS[pending_id] = {"destinataire": destinataire, "sujet": sujet, "contenu": contenu}
     return (f"[PROPOSAL {pending_id}] Ready to send to {destinataire}, subject \"{sujet}\". "
             f"NOT SENT -- waiting on your confirmation.")
+
+
+def execute_pending_send(pending_id: str) -> dict:
+    """Executes a proposal from PENDING_SENDS (removing it either way), with
+    the same daily anti-ban cap check as everywhere else a send can happen --
+    falls back to a draft instead of a flat refusal once the cap is reached.
+    NOT a @tool -- this only runs after a human confirms (a Discord button
+    today, the web dashboard's confirm-send action once it exists), never
+    called by the agent itself. Returns {"status": one of "expired" |
+    "draft_failed" | "draft_saved" | "send_failed" | "sent", "title": str,
+    "description": str} -- no Discord/HTTP-specific content, so both
+    interfaces map "status" to their own visual treatment."""
+    from tools import email_tools
+
+    payload = PENDING_SENDS.pop(pending_id, None)
+    if not payload:
+        return {
+            "status": "expired", "title": "Proposal expired",
+            "description": "This proposal is no longer valid (already sent or expired).",
+        }
+
+    with get_connection() as conn:
+        sent_today = conn.execute(
+            "SELECT COUNT(*) c FROM run_log WHERE run_type='email_send' AND date(started_at) = date('now')"
+        ).fetchone()["c"]
+
+    if sent_today >= GMAIL_DAILY_SEND_CAP:
+        result = email_tools.creer_brouillon(
+            email_compte=email_tools.SEND_ACCOUNT, destinataire=payload["destinataire"],
+            sujet=payload["sujet"], contenu=payload["contenu"],
+        )
+        # email_tools always prefixes its errors with "Error" (a convention of
+        # that module, the same check rechercher_emails uses elsewhere in this
+        # file) -- checked here so a failed draft never gets reported as a success.
+        failed = result.startswith("Error")
+        return {
+            "status": "draft_failed" if failed else "draft_saved",
+            "title": "Draft failed" if failed else "Daily cap reached -- saved as draft",
+            "description": result if failed else f"Daily cap of {GMAIL_DAILY_SEND_CAP} sends reached. {result}",
+        }
+
+    result = email_tools.envoyer_ou_repondre_email(
+        email_compte=email_tools.SEND_ACCOUNT, destinataire=payload["destinataire"],
+        sujet=payload["sujet"], contenu=payload["contenu"],
+    )
+    failed = result.startswith("Error")
+    # Only sends that actually went out count against the daily cap -- a
+    # silent SMTP failure (wrong password, network outage...) must never eat
+    # into the anti-ban cap or get reported as a misleading success.
+    if not failed:
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO run_log (run_type, source, started_at, finished_at, n_found, n_new) "
+                "VALUES ('email_send', ?, datetime('now'), datetime('now'), 1, 1)",
+                (email_tools.SEND_ACCOUNT,),
+            )
+    return {
+        "status": "send_failed" if failed else "sent",
+        "title": "Send failed" if failed else "Email sent",
+        "description": result,
+    }
 
 
 TOOLS = [
@@ -947,7 +1012,7 @@ Non-negotiable rules:
 
 # Bounded context: a long conversation (lots of tool round-trips) must never
 # drift the model by saturating its context window. The full state stays in
-# the checkpointer (InMemorySaver); only what's actually sent to the LLM each
+# the checkpointer (SqliteSaver); only what's actually sent to the LLM each
 # turn gets trimmed to the ~6000 most recent tokens.
 MAX_CONTEXT_TOKENS = int(os.environ.get("CHAT_AGENT_MAX_CONTEXT_TOKENS", "6000"))
 
@@ -960,14 +1025,52 @@ def _trim_history(state: dict) -> dict:
     return {"llm_input_messages": trimmed}
 
 
-_checkpointer = InMemorySaver()
+CHECKPOINT_DB_PATH = Path(__file__).resolve().parent.parent / os.environ.get(
+    "HOBOT_CHECKPOINT_DB_PATH", "checkpoints.db"
+)
+# check_same_thread=False: shared across Discord's run_in_executor threads and
+# (once the web dashboard exists) FastAPI's own request threads -- SqliteSaver
+# guards every access with its own internal lock, so one connection shared
+# across threads in the same process is safe, just not across OS processes.
+_checkpoint_conn = sqlite3.connect(str(CHECKPOINT_DB_PATH), check_same_thread=False)
+_checkpointer = SqliteSaver(_checkpoint_conn)
+_checkpointer.setup()  # idempotent; called explicitly here so a broken DB file fails fast at import, not on the first /ask
 _agent = create_react_agent(
-    model=ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_HOST, temperature=0.2),
+    model=get_chat_model(temperature=0.2),
     tools=TOOLS,
     prompt=SYSTEM_PROMPT,
     checkpointer=_checkpointer,
     pre_model_hook=_trim_history,
 )
+
+
+def wipe_memory() -> None:
+    """Deletes every stored conversation checkpoint -- used by /reset, since
+    starting clean plausibly includes forgetting old conversations too. Goes
+    through the checkpointer's own locked cursor() rather than a second
+    connection, so it can't race an in-flight checkpoint write from another
+    thread."""
+    with _checkpointer.cursor() as cur:
+        cur.execute("DELETE FROM checkpoints")
+        cur.execute("DELETE FROM writes")
+
+
+def get_history(thread_id: str) -> list[dict]:
+    """Stored conversation turns for a thread_id, oldest first, as plain
+    {"role": "user"|"assistant", "content": str} dicts -- tool calls/results
+    filtered out, a chat UI shows the conversation, not the agent's internal
+    tool-calling steps. Used by the web dashboard's chat page; Discord
+    doesn't need this, it already shows turns live in the channel as they
+    happen."""
+    state = _agent.get_state({"configurable": {"thread_id": thread_id}})
+    if not state:
+        return []
+    turns = []
+    for m in state.values.get("messages", []):
+        role = {"human": "user", "ai": "assistant"}.get(getattr(m, "type", None))
+        if role and isinstance(m.content, str) and m.content:
+            turns.append({"role": role, "content": m.content})
+    return turns
 
 
 def ask(message: str, thread_id: str) -> str:

@@ -24,18 +24,26 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from core import daemon_state
+from core import daemon_state, queries
 from core.db import get_connection
 from graphs.chat_agent import PENDING_SENDS
 from graphs.chat_agent import ask as agent_ask
 from graphs.chat_agent import axes_progression as axes_progression_tool
+from graphs.chat_agent import execute_pending_send, wipe_memory
 from tools import common, email_tools
 from tools.discord_style import COLOR_ACTIVE, COLOR_DEFAULT, COLOR_ERROR, COLOR_PAUSED, base_embed
 
 GMAIL_DAILY_SEND_CAP = int(os.environ.get("GMAIL_DAILY_SEND_CAP", "15"))
 
-TOKEN = os.environ["DISCORD_BOT_TOKEN"]
-CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
+TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
+_channel_id_raw = os.environ.get("DISCORD_CHANNEL_ID")
+CHANNEL_ID = int(_channel_id_raw) if _channel_id_raw else None
+# Whether the bot should actually run -- daemon.py only imports/starts this
+# module when both are set, so hobot can run web-dashboard-only or headless
+# (scheduler only) without a Discord app ever being created. Everything below
+# this line still assumes both are present the moment it actually executes
+# (which only happens once DISCORD_ENABLED gated the caller).
+DISCORD_ENABLED = bool(TOKEN and CHANNEL_ID)
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
@@ -120,18 +128,9 @@ async def on_ready():
 
 @tree.command(name="status", description="Summary of the last discovery/mail run")
 async def status(interaction: discord.Interaction):
-    with get_connection() as conn:
-        last_discovery = conn.execute(
-            "SELECT * FROM run_log WHERE run_type='discovery' ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        last_email = conn.execute(
-            "SELECT * FROM run_log WHERE run_type='email_watch' ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        backlog = conn.execute("SELECT COUNT(*) c FROM offers WHERE score IS NULL").fetchone()["c"]
-        best = conn.execute(
-            "SELECT title, company, score FROM offers "
-            "WHERE score IS NOT NULL AND status NOT IN ('applied', 'excluded', 'expired') ORDER BY score DESC LIMIT 1"
-        ).fetchone()
+    summary = queries.get_status_summary()
+    last_discovery, last_email = summary["last_discovery"], summary["last_email"]
+    backlog, best = summary["backlog"], summary["best"]
 
     next_discovery = next_email = "unknown (daemon not running)"
     if daemon_state.scheduler is not None:
@@ -260,14 +259,7 @@ class OffersView(discord.ui.View):
 
 @tree.command(name="offers", description="Best-scored postings (already-applied excluded)")
 async def offers(interaction: discord.Interaction):
-    with get_connection() as conn:
-        rows = conn.execute(
-            """SELECT o.id, o.title, o.company, o.location, o.score, o.url,
-                      (a.cover_letter_path IS NOT NULL) AS has_dossier
-               FROM offers o LEFT JOIN applications a ON a.offer_id = o.id
-               WHERE o.score IS NOT NULL AND o.status NOT IN ('applied', 'excluded', 'expired')
-               ORDER BY o.score DESC LIMIT 8"""
-        ).fetchall()
+    rows = queries.list_offers(limit=8)
 
     if not rows:
         embed = base_embed("Postings", description="No scored posting yet.")
@@ -291,10 +283,7 @@ async def offers(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=OffersView(rows))
 
 
-STATUS_LABELS = {
-    "applied": "Applied", "excluded": "Excluded", "scored": "Scored",
-    "new": "Not scored yet", "expired": "Expired (dead link)",
-}
+STATUS_LABELS = common.STATUS_LABELS
 
 
 async def _send_offer_files(interaction: discord.Interaction, offer_id: int) -> None:
@@ -430,18 +419,11 @@ async def _dossier_offer_autocomplete(interaction: discord.Interaction, current:
 @app_commands.describe(offer_id="Posting number, shown with # in /offers")
 @app_commands.autocomplete(offer_id=_any_offer_autocomplete)
 async def offer_cmd(interaction: discord.Interaction, offer_id: int):
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT title, company, location, description, url, score, score_reason, status, "
-            "last_seen_at, source FROM offers WHERE id = ?", (offer_id,),
-        ).fetchone()
-        if not row:
-            embed = base_embed("Posting not found", color=COLOR_ERROR, description=f"No posting #{offer_id}.")
-            await interaction.response.send_message(embed=embed)
-            return
-        has_dossier = conn.execute(
-            "SELECT 1 FROM applications WHERE offer_id = ? AND cover_letter_path IS NOT NULL", (offer_id,),
-        ).fetchone() is not None
+    row, has_dossier = queries.get_offer_detail(offer_id)
+    if not row:
+        embed = base_embed("Posting not found", color=COLOR_ERROR, description=f"No posting #{offer_id}.")
+        await interaction.response.send_message(embed=embed)
+        return
 
     if row["status"] == "applied":
         color = COLOR_ACTIVE
@@ -492,32 +474,17 @@ async def funnel(interaction: discord.Interaction):
 
 @tree.command(name="breakdown", description="How many postings per score tier, and how many still waiting to be scored")
 async def breakdown(interaction: discord.Interaction):
-    with get_connection() as conn:
-        unscored = conn.execute("SELECT COUNT(*) c FROM offers WHERE score IS NULL").fetchone()["c"]
-        rows = conn.execute(
-            "SELECT score FROM offers WHERE score IS NOT NULL AND status NOT IN ('applied', 'excluded', 'expired')"
-        ).fetchall()
-    scores = [r["score"] for r in rows]
-    tiers = [
-        ("80 and up", sum(1 for s in scores if s >= 80)),
-        ("60-79", sum(1 for s in scores if 60 <= s < 80)),
-        ("40-59", sum(1 for s in scores if 40 <= s < 60)),
-        ("Under 40", sum(1 for s in scores if s < 40)),
-    ]
+    result = queries.get_breakdown()
     embed = base_embed("Score breakdown")
-    for label, n in tiers:
+    for label, n in result["tiers"]:
         embed.add_field(name=label, value=str(n), inline=True)
-    embed.add_field(name="Waiting to be scored", value=str(unscored), inline=False)
+    embed.add_field(name="Waiting to be scored", value=str(result["unscored"]), inline=False)
     await interaction.response.send_message(embed=embed)
 
 
 @tree.command(name="applications", description="Lists applications already sent or marked")
 async def applications_cmd(interaction: discord.Interaction):
-    with get_connection() as conn:
-        rows = conn.execute(
-            """SELECT a.status, a.sent_at, o.id, o.title, o.company FROM applications a
-               JOIN offers o ON o.id = a.offer_id ORDER BY a.id DESC LIMIT 15"""
-        ).fetchall()
+    rows = queries.list_applications(limit=15)
     if not rows:
         embed = base_embed("Applications", description="No application recorded yet.")
         await interaction.response.send_message(embed=embed)
@@ -533,19 +500,8 @@ async def applications_cmd(interaction: discord.Interaction):
 @tree.command(name="sources", description="Status of each discovery source (last attempt, errors, backing off or not)")
 async def sources_status(interaction: discord.Interaction):
     from core.circuit_breaker import is_backed_off
-    from graphs.discovery_graph import ACTIVE_DISCOVERY_SOURCES
 
-    placeholders = ",".join("?" * len(ACTIVE_DISCOVERY_SOURCES))
-    with get_connection() as conn:
-        rows = conn.execute(
-            f"""SELECT r.source, r.finished_at, r.n_found, r.n_new, r.errors
-               FROM run_log r
-               JOIN (SELECT source, MAX(id) AS max_id FROM run_log
-                     WHERE run_type = 'discovery' AND source IN ({placeholders}) GROUP BY source) m
-                 ON r.source = m.source AND r.id = m.max_id
-               ORDER BY r.source""",
-            ACTIVE_DISCOVERY_SOURCES,
-        ).fetchall()
+    rows = queries.get_sources_status()
 
     if not rows:
         embed = base_embed("Sources", description="No source has run yet.")
@@ -569,15 +525,7 @@ async def sources_status(interaction: discord.Interaction):
 
 @tree.command(name="strategy", description="Search keyword currently in use for each discovery source")
 async def strategy(interaction: discord.Interaction):
-    with get_connection() as conn:
-        rows = conn.execute(
-            """SELECT r.source, r.query, r.n_found, r.finished_at
-               FROM run_log r
-               JOIN (SELECT source, MAX(id) AS max_id FROM run_log
-                     WHERE query IS NOT NULL GROUP BY source) m
-                 ON r.source = m.source AND r.id = m.max_id
-               ORDER BY r.source"""
-        ).fetchall()
+    rows = queries.get_strategy()
 
     if not rows:
         embed = base_embed("Search strategy", description="No keyword recorded yet.")
@@ -599,12 +547,7 @@ async def strategy(interaction: discord.Interaction):
 @tree.command(name="log", description="Recent history of discovery runs (keywords searched, results found)")
 @app_commands.describe(limit="How many runs to show (default 12, max 20)")
 async def log_cmd(interaction: discord.Interaction, limit: app_commands.Range[int, 1, 20] = 12):
-    with get_connection() as conn:
-        rows = conn.execute(
-            """SELECT source, query, n_found, n_new, errors, finished_at
-               FROM run_log WHERE run_type = 'discovery' ORDER BY id DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
+    rows = queries.get_run_log(limit=limit)
 
     if not rows:
         embed = base_embed("Discovery log", description="No discovery run recorded yet.")
@@ -627,11 +570,7 @@ async def log_cmd(interaction: discord.Interaction, limit: app_commands.Range[in
 @tree.command(name="notifications", description="History of notifications sent (postings, mail, digest, cleanup)")
 @app_commands.describe(limit="How many notifications to show (default 10, max 20)")
 async def notifications_cmd(interaction: discord.Interaction, limit: app_commands.Range[int, 1, 20] = 10):
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT kind, title, message, offer_ids, created_at FROM notifications ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+    rows = queries.get_notifications(limit=limit)
 
     if not rows:
         embed = base_embed("Notifications", description="No notification sent yet.")
@@ -856,38 +795,6 @@ async def resume(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-def _wipe_database() -> None:
-    """Deletes every row, children before the offers/applications they
-    reference (company_contacts.offer_id etc. are declared REFERENCES, and
-    PRAGMA foreign_keys = ON in get_connection() means deleting a parent
-    first is rejected) -- then resets the autoincrement counters, so a fresh
-    posting starts back at #1 instead of continuing from wherever it left
-    off. Row-by-row DELETE rather than dropping/recreating tables so the
-    daemon's already-open connections keep working with no restart needed."""
-    with get_connection() as conn:
-        for table in ("company_contacts", "applications", "emails", "offers",
-                      "run_log", "api_calls", "notifications", "memory_summaries", "user_profile"):
-            conn.execute(f"DELETE FROM {table}")
-        conn.execute("DELETE FROM sqlite_sequence")
-
-
-def _wipe_files() -> None:
-    """Clears outputs/ (generated CVs + letters) and profile_source/ (the
-    uploaded CV) -- everything /reset's database wipe leaves no working
-    pointer to anyway, so leaving the files behind would just be orphaned
-    disk usage no command can reach again."""
-    import shutil
-
-    from core.profile import PROFILE_DIR
-    from tools.documents import OUTPUT_DIR
-
-    for base in (OUTPUT_DIR, PROFILE_DIR):
-        if not base.exists():
-            continue
-        for child in base.iterdir():
-            shutil.rmtree(child) if child.is_dir() else child.unlink()
-
-
 class ConfirmResetView(discord.ui.View):
     """Same danger-button-requires-a-click pattern as ConfirmSendView above --
     /reset is the most destructive command in the bot, it doesn't get to run
@@ -899,12 +806,13 @@ class ConfirmResetView(discord.ui.View):
     @discord.ui.button(label="Confirm reset", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
-        _wipe_database()
-        _wipe_files()
+        queries.wipe_database()
+        queries.wipe_files()
+        wipe_memory()
         embed = base_embed(
             "Reset complete", color=COLOR_ACTIVE,
-            description="Every posting, application, contact, notification, and the uploaded CV are gone. "
-                        "Run `/profile` again to set one up.",
+            description="Every posting, application, contact, notification, uploaded CV, and chat conversation "
+                        "are gone. Run `/profile` again to set one up.",
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -913,8 +821,8 @@ class ConfirmResetView(discord.ui.View):
 async def reset_cmd(interaction: discord.Interaction) -> None:
     embed = base_embed(
         "Reset everything?", color=COLOR_ERROR,
-        description="This deletes every posting, application, contact, notification, and the uploaded CV. "
-                    "Cannot be undone.",
+        description="This deletes every posting, application, contact, notification, the uploaded CV, and "
+                    "the /ask conversation history. Cannot be undone.",
     )
     await interaction.response.send_message(embed=embed, view=ConfirmResetView(), ephemeral=True)
 
@@ -928,63 +836,17 @@ class ConfirmSendView(discord.ui.View):
 
     @discord.ui.button(label="Confirm send", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        payload = PENDING_SENDS.pop(self.pending_id, None)
-        if not payload:
-            embed = base_embed(
-                "Proposal expired", color=COLOR_ERROR,
-                description="This proposal is no longer valid (already sent or expired).",
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        with get_connection() as conn:
-            sent_today = conn.execute(
-                "SELECT COUNT(*) c FROM run_log WHERE run_type='email_send' AND date(started_at) = date('now')"
-            ).fetchone()["c"]
-
-        if sent_today >= GMAIL_DAILY_SEND_CAP:
-            # Anti-ban cap reached -> draft instead of a flat refusal.
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: email_tools.creer_brouillon(
-                    email_compte=email_tools.SEND_ACCOUNT, destinataire=payload["destinataire"],
-                    sujet=payload["sujet"], contenu=payload["contenu"],
-                )
-            )
-            # email_tools always prefixes its errors with "Error" (a convention
-            # of that module, the same check rechercher_emails/chat_agent.py
-            # use) -- checked here so a failed draft never gets reported as a
-            # success.
-            failed = result.startswith("Error")
-            title = "Draft failed" if failed else "Daily cap reached — saved as draft"
-            color = COLOR_ERROR if failed else COLOR_PAUSED
-            description = result if failed else f"Daily cap of {GMAIL_DAILY_SEND_CAP} sends reached. {result}"
-        else:
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: email_tools.envoyer_ou_repondre_email(
-                    email_compte=email_tools.SEND_ACCOUNT, destinataire=payload["destinataire"],
-                    sujet=payload["sujet"], contenu=payload["contenu"],
-                )
-            )
-            failed = result.startswith("Error")
-            # Only sends that actually went out count against the daily cap --
-            # a silent SMTP failure (wrong password, network outage...) must
-            # never eat into the anti-ban cap or get reported as a misleading
-            # success.
-            if not failed:
-                with get_connection() as conn:
-                    conn.execute(
-                        "INSERT INTO run_log (run_type, source, started_at, finished_at, n_found, n_new) "
-                        "VALUES ('email_send', ?, datetime('now'), datetime('now'), 1, 1)",
-                        (email_tools.SEND_ACCOUNT,),
-                    )
-            title = "Send failed" if failed else "Email sent"
-            color = COLOR_ERROR if failed else COLOR_ACTIVE
-            description = result
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, execute_pending_send, self.pending_id,
+        )
+        color = {"sent": COLOR_ACTIVE, "draft_saved": COLOR_PAUSED}.get(result["status"], COLOR_ERROR)
 
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(view=self)
-        await interaction.followup.send(embed=base_embed(title, color=color, description=description))
+        await interaction.followup.send(
+            embed=base_embed(result["title"], color=color, description=result["description"]),
+        )
 
 
 AGENT_TIMEOUT_SECONDS = int(os.environ.get("AGENT_TIMEOUT_SECONDS", "180"))

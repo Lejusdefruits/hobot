@@ -1,5 +1,7 @@
 .env
 *.db
+*.db-shm
+*.db-wal
 outputs/
 profile_source/
 __pycache__/
