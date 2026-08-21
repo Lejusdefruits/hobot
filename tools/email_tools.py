@@ -231,6 +231,37 @@ def modifier_brouillon(uid: str, destinataire: str, sujet: str, contenu: str, em
     return f"Draft {uid} replaced. {creation}"
 
 
+def envoyer_brouillon_existant(uid: str, email_compte: str = None) -> str:
+    """Sends an existing draft (uid from lister_brouillons) as-is, then
+    deletes it from the Drafts folder. Re-reads the FULL message body before
+    sending -- lister_brouillons only returns a preview truncated to 200
+    characters (apercu); sending that as-is would cut a real draft off in the
+    middle (confirmed: a real ~1800-character draft against a 200-character
+    preview)."""
+    email_compte = email_compte or SEND_ACCOUNT
+    mot_de_passe = verifier_compte_envoi(email_compte)
+    try:
+        with MailBox('imap.gmail.com', timeout=IMAP_TIMEOUT).login(email_compte, mot_de_passe) as mailbox:
+            dossier_brouillons = _find_drafts_folder(mailbox)
+            mailbox.folder.set(dossier_brouillons)
+            msgs = list(mailbox.fetch(AND(uid=uid)))
+            if not msgs:
+                return f"No draft with uid {uid} (already sent or deleted?)."
+            msg = msgs[0]
+            destinataire = ", ".join(msg.to) if isinstance(msg.to, (list, tuple)) else msg.to
+            sujet, contenu = msg.subject, (msg.text or msg.html or "")
+    except Exception as e:
+        return f"Error reading the draft: {e}"
+
+    envoi = envoyer_ou_repondre_email(email_compte, destinataire, sujet, contenu)
+    if envoi.startswith("Error"):
+        return envoi
+    suppression = supprimer_brouillon(uid, email_compte)
+    if suppression.startswith("Error"):
+        return f"{envoi} (the original draft couldn't be deleted afterward: {suppression})"
+    return envoi
+
+
 def tester_les_comptes() -> None:
     print("\n" + "=" * 50)
     print(" STARTING GMAIL ACCOUNT TESTS ".center(50, "="))

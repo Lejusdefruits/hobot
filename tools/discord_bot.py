@@ -10,6 +10,7 @@ available immediately instead of waiting up to an hour for Discord's global
 propagation.
 """
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -27,6 +28,7 @@ from core import daemon_state
 from core.db import get_connection
 from graphs.chat_agent import PENDING_SENDS
 from graphs.chat_agent import ask as agent_ask
+from graphs.chat_agent import axes_progression as axes_progression_tool
 from tools import common, email_tools
 from tools.discord_style import COLOR_ACTIVE, COLOR_DEFAULT, COLOR_ERROR, COLOR_PAUSED, base_embed
 
@@ -171,12 +173,102 @@ async def status(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
+class MarkAppliedButton(discord.ui.Button):
+    """One button per posting listed in /offers -- skips retyping `/applied
+    <number>` after already reading the number right above it. Same logic as
+    the /applied command below, just triggered by a click."""
+
+    def __init__(self, offer_id: int, title: str, company: str | None):
+        super().__init__(label=f"#{offer_id} applied", style=discord.ButtonStyle.secondary)
+        self.offer_id = offer_id
+        self.title = title
+        self.company = company
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        with get_connection() as conn:
+            row = conn.execute("SELECT status FROM offers WHERE id = ?", (self.offer_id,)).fetchone()
+            if not row:
+                await interaction.response.send_message(f"No posting #{self.offer_id}.", ephemeral=True)
+                return
+            if row["status"] == "applied":
+                await interaction.response.send_message(
+                    f"#{self.offer_id} was already marked applied.", ephemeral=True,
+                )
+                return
+            conn.execute("UPDATE offers SET status = 'applied' WHERE id = ?", (self.offer_id,))
+            conn.execute(
+                "INSERT INTO applications (offer_id, status, sent_at) VALUES (?, 'applied', datetime('now'))",
+                (self.offer_id,),
+            )
+            common.archive_cover_letter(conn, self.offer_id)
+        if self.view is not None:
+            _disable_offer_buttons(self.view, self.offer_id)
+            await interaction.response.edit_message(view=self.view)
+        else:
+            await interaction.response.defer()
+        await interaction.followup.send(
+            f"**#{self.offer_id}** marked applied: {self.title} -- {self.company or '?'}", ephemeral=True,
+        )
+
+
+class ExcludeButton(discord.ui.Button):
+    """Counterpart to MarkAppliedButton -- exclude directly from /offers or
+    /offer without going through /ask, same logic as the /exclude command
+    below."""
+
+    def __init__(self, offer_id: int, title: str, company: str | None):
+        super().__init__(label=f"#{offer_id} exclude", style=discord.ButtonStyle.danger)
+        self.offer_id = offer_id
+        self.title = title
+        self.company = company
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        with get_connection() as conn:
+            row = conn.execute("SELECT status FROM offers WHERE id = ?", (self.offer_id,)).fetchone()
+            if not row:
+                await interaction.response.send_message(f"No posting #{self.offer_id}.", ephemeral=True)
+                return
+            if row["status"] in ("applied", "excluded"):
+                already = "applied" if row["status"] == "applied" else "excluded"
+                await interaction.response.send_message(f"#{self.offer_id} is already {already}.", ephemeral=True)
+                return
+            conn.execute("UPDATE offers SET status = 'excluded' WHERE id = ?", (self.offer_id,))
+        if self.view is not None:
+            _disable_offer_buttons(self.view, self.offer_id)
+            await interaction.response.edit_message(view=self.view)
+        else:
+            await interaction.response.defer()
+        await interaction.followup.send(
+            f"**#{self.offer_id}** excluded: {self.title} -- {self.company or '?'}", ephemeral=True,
+        )
+
+
+def _disable_offer_buttons(view: discord.ui.View, offer_id: int) -> None:
+    """Disables both buttons (applied + exclude) for the same posting after an
+    action on either -- once applied or excluded, the other action no longer
+    makes sense."""
+    for child in view.children:
+        if getattr(child, "offer_id", None) == offer_id:
+            child.disabled = True
+
+
+class OffersView(discord.ui.View):
+    def __init__(self, rows) -> None:
+        super().__init__(timeout=3600)  # same duration as ConfirmSendView -- past that, just retype /offers
+        for r in rows:
+            self.add_item(MarkAppliedButton(r["id"], r["title"], r["company"]))
+            self.add_item(ExcludeButton(r["id"], r["title"], r["company"]))
+
+
 @tree.command(name="offers", description="Best-scored postings (already-applied excluded)")
 async def offers(interaction: discord.Interaction):
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id, title, company, location, score, url FROM offers "
-            "WHERE score IS NOT NULL AND status NOT IN ('applied', 'excluded', 'expired') ORDER BY score DESC LIMIT 8"
+            """SELECT o.id, o.title, o.company, o.location, o.score, o.url,
+                      (a.cover_letter_path IS NOT NULL) AS has_dossier
+               FROM offers o LEFT JOIN applications a ON a.offer_id = o.id
+               WHERE o.score IS NOT NULL AND o.status NOT IN ('applied', 'excluded', 'expired')
+               ORDER BY o.score DESC LIMIT 8"""
         ).fetchall()
 
     if not rows:
@@ -186,17 +278,19 @@ async def offers(interaction: discord.Interaction):
 
     embed = base_embed(
         f"Best postings ({len(rows)})",
-        description="Already applied to one of these? `/applied <number>` to drop it from the list.",
+        description="Already applied to one of these? Click its button below, or `/applied <number>`.",
     )
     for r in rows:
         name = f"#{r['id']} · {r['score']}/100 — {r['title']}"[:256]
         value = r["company"] or "?"
         if r["location"]:
             value += f" — {r['location']}"
+        if r["has_dossier"]:
+            value += "\nCV + letter already ready (`/files`)"
         if r["url"]:
             value += f"\n[View posting]({r['url']})"
         embed.add_field(name=name, value=value[:1024], inline=False)
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, view=OffersView(rows))
 
 
 STATUS_LABELS = {
@@ -205,7 +299,69 @@ STATUS_LABELS = {
 }
 
 
-@tree.command(name="offer", description="Full detail on one posting (description, score, status)")
+async def _send_offer_files(interaction: discord.Interaction, offer_id: int) -> None:
+    """Sends the CV + cover letter PDFs for a posting as ephemeral
+    attachments -- shared by /files and /offer's "View application" button.
+    Reads both paths straight from `applications` (cv_path, cover_letter_path)
+    rather than deriving one from the other's directory, since hobot stores
+    each explicitly."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT a.cover_letter_path, a.cv_path, o.title, o.company FROM applications a "
+            "JOIN offers o ON o.id = a.offer_id WHERE a.offer_id = ? AND a.cover_letter_path IS NOT NULL "
+            "ORDER BY a.id DESC LIMIT 1",
+            (offer_id,),
+        ).fetchone()
+    if not row:
+        embed = base_embed(
+            "No file yet", color=COLOR_ERROR,
+            description=f"No CV/letter generated for #{offer_id} yet. Ask for one via `/ask` "
+                        f"(e.g. \"prepare a CV and letter for posting {offer_id}\").",
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    letter_path = Path(row["cover_letter_path"])
+    if not letter_path.exists():
+        embed = base_embed(
+            "File missing", color=COLOR_ERROR,
+            description=f"The letter for #{offer_id} is recorded in the database but {letter_path} is missing.",
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    files = [discord.File(letter_path)]
+    if row["cv_path"] and Path(row["cv_path"]).exists():
+        files.append(discord.File(row["cv_path"]))
+    await interaction.response.send_message(
+        content=f"Application files -- #{offer_id} {row['title']} ({row['company'] or '?'})",
+        files=files, ephemeral=True,
+    )
+
+
+class ShowLetterButton(discord.ui.Button):
+    """/offer's button to grab the already-generated CV + letter directly,
+    without retyping the number into /files."""
+
+    def __init__(self, offer_id: int):
+        super().__init__(label="View application (CV + letter)", style=discord.ButtonStyle.secondary)
+        self.offer_id = offer_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _send_offer_files(interaction, self.offer_id)
+
+
+class OffreView(discord.ui.View):
+    def __init__(self, offer_id: int, title: str, company: str | None, status: str, has_dossier: bool) -> None:
+        super().__init__(timeout=3600)
+        if status not in ("applied", "excluded"):
+            self.add_item(MarkAppliedButton(offer_id, title, company))
+            self.add_item(ExcludeButton(offer_id, title, company))
+        if has_dossier:
+            self.add_item(ShowLetterButton(offer_id))
+
+
+@tree.command(name="offer", description="Full detail on one posting (description, score, status, contacts)")
 @app_commands.describe(offer_id="Posting number, shown with # in /offers")
 async def offer_cmd(interaction: discord.Interaction, offer_id: int):
     with get_connection() as conn:
@@ -213,10 +369,13 @@ async def offer_cmd(interaction: discord.Interaction, offer_id: int):
             "SELECT title, company, location, description, url, score, score_reason, status, "
             "last_seen_at, source FROM offers WHERE id = ?", (offer_id,),
         ).fetchone()
-    if not row:
-        embed = base_embed("Posting not found", color=COLOR_ERROR, description=f"No posting #{offer_id}.")
-        await interaction.response.send_message(embed=embed)
-        return
+        if not row:
+            embed = base_embed("Posting not found", color=COLOR_ERROR, description=f"No posting #{offer_id}.")
+            await interaction.response.send_message(embed=embed)
+            return
+        has_dossier = conn.execute(
+            "SELECT 1 FROM applications WHERE offer_id = ? AND cover_letter_path IS NOT NULL", (offer_id,),
+        ).fetchone() is not None
 
     if row["status"] == "applied":
         color = COLOR_ACTIVE
@@ -239,7 +398,15 @@ async def offer_cmd(interaction: discord.Interaction, offer_id: int):
         embed.add_field(name="Description", value=row["description"][:1024], inline=False)
     if row["url"]:
         embed.add_field(name="Listing", value=row["url"][:1024], inline=False)
-    await interaction.response.send_message(embed=embed)
+
+    view = OffreView(offer_id, row["title"], row["company"], row["status"], has_dossier)
+    await interaction.response.send_message(embed=embed, view=view)
+
+
+@tree.command(name="files", description="Sends the already-generated CV + letter for a posting")
+@app_commands.describe(offer_id="Posting number, shown with # in /offers")
+async def files_cmd(interaction: discord.Interaction, offer_id: int):
+    await _send_offer_files(interaction, offer_id)
 
 
 @tree.command(name="funnel", description="Conversion funnel: found -> scored -> letter -> sent -> reply -> interview")
@@ -254,6 +421,292 @@ async def funnel(interaction: discord.Interaction):
             value += f" ({s['pct_previous']}% of previous stage, {s['pct_total']}% of total)"
         embed.add_field(name=s["label"].capitalize(), value=value, inline=False)
     await interaction.response.send_message(embed=embed)
+
+
+@tree.command(name="breakdown", description="How many postings per score tier, and how many still waiting to be scored")
+async def breakdown(interaction: discord.Interaction):
+    with get_connection() as conn:
+        unscored = conn.execute("SELECT COUNT(*) c FROM offers WHERE score IS NULL").fetchone()["c"]
+        rows = conn.execute(
+            "SELECT score FROM offers WHERE score IS NOT NULL AND status NOT IN ('applied', 'excluded', 'expired')"
+        ).fetchall()
+    scores = [r["score"] for r in rows]
+    tiers = [
+        ("80 and up", sum(1 for s in scores if s >= 80)),
+        ("60-79", sum(1 for s in scores if 60 <= s < 80)),
+        ("40-59", sum(1 for s in scores if 40 <= s < 60)),
+        ("Under 40", sum(1 for s in scores if s < 40)),
+    ]
+    embed = base_embed("Score breakdown")
+    for label, n in tiers:
+        embed.add_field(name=label, value=str(n), inline=True)
+    embed.add_field(name="Waiting to be scored", value=str(unscored), inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@tree.command(name="applications", description="Lists applications already sent or marked")
+async def applications_cmd(interaction: discord.Interaction):
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT a.status, a.sent_at, o.id, o.title, o.company FROM applications a
+               JOIN offers o ON o.id = a.offer_id ORDER BY a.id DESC LIMIT 15"""
+        ).fetchall()
+    if not rows:
+        embed = base_embed("Applications", description="No application recorded yet.")
+        await interaction.response.send_message(embed=embed)
+        return
+    embed = base_embed(f"Applications ({len(rows)})", color=COLOR_ACTIVE)
+    for r in rows:
+        name = f"#{r['id']} -- {r['title']}"[:256]
+        value = f"{r['company'] or '?'}\n{r['status']} -- {r['sent_at'] or 'unknown date'}"
+        embed.add_field(name=name, value=value[:1024], inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@tree.command(name="sources", description="Status of each discovery source (last attempt, errors, backing off or not)")
+async def sources_status(interaction: discord.Interaction):
+    from core.circuit_breaker import is_backed_off
+    from graphs.discovery_graph import ACTIVE_DISCOVERY_SOURCES
+
+    placeholders = ",".join("?" * len(ACTIVE_DISCOVERY_SOURCES))
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT r.source, r.finished_at, r.n_found, r.n_new, r.errors
+               FROM run_log r
+               JOIN (SELECT source, MAX(id) AS max_id FROM run_log
+                     WHERE run_type = 'discovery' AND source IN ({placeholders}) GROUP BY source) m
+                 ON r.source = m.source AND r.id = m.max_id
+               ORDER BY r.source""",
+            ACTIVE_DISCOVERY_SOURCES,
+        ).fetchall()
+
+    if not rows:
+        embed = base_embed("Sources", description="No source has run yet.")
+        await interaction.response.send_message(embed=embed)
+        return
+
+    embed = base_embed("Discovery source status")
+    for r in rows:
+        backed_off, until = is_backed_off(r["source"])
+        if backed_off:
+            value = f"**Backed off** until {until}\nLast attempt: {r['finished_at']}"
+            if r["errors"]:
+                value += f"\n{r['errors'][:200]}"
+        elif r["errors"]:
+            value = f"Last attempt failed ({r['finished_at']}):\n{r['errors'][:200]}"
+        else:
+            value = f"OK -- {r['finished_at']}\n{r['n_found']} found, {r['n_new']} new"
+        embed.add_field(name=common.source_label(r["source"]), value=value[:1024], inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@tree.command(name="strategy", description="Search keyword currently in use for each discovery source")
+async def strategy(interaction: discord.Interaction):
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT r.source, r.query, r.n_found, r.finished_at
+               FROM run_log r
+               JOIN (SELECT source, MAX(id) AS max_id FROM run_log
+                     WHERE query IS NOT NULL GROUP BY source) m
+                 ON r.source = m.source AND r.id = m.max_id
+               ORDER BY r.source"""
+        ).fetchall()
+
+    if not rows:
+        embed = base_embed("Search strategy", description="No keyword recorded yet.")
+        await interaction.response.send_message(embed=embed)
+        return
+
+    embed = base_embed(
+        "Current search strategy",
+        description="No per-run adaptation: each keyword comes straight from your target roles "
+                     "and stays fixed until the profile changes.",
+    )
+    for r in rows:
+        name = f"{common.source_label(r['source'])} -- \"{r['query']}\""[:256]
+        value = f"{r['n_found']} result(s) last run ({r['finished_at']})"
+        embed.add_field(name=name, value=value[:1024], inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@tree.command(name="log", description="Recent history of discovery runs (keywords searched, results found)")
+@app_commands.describe(limit="How many runs to show (default 12, max 20)")
+async def log_cmd(interaction: discord.Interaction, limit: app_commands.Range[int, 1, 20] = 12):
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT source, query, n_found, n_new, errors, finished_at
+               FROM run_log WHERE run_type = 'discovery' ORDER BY id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+    if not rows:
+        embed = base_embed("Discovery log", description="No discovery run recorded yet.")
+        await interaction.response.send_message(embed=embed)
+        return
+
+    embed = base_embed(f"Discovery log -- {len(rows)} most recent run(s)")
+    for r in reversed(rows):  # oldest to newest, more natural to read
+        name = f"{r['finished_at'] or '?'} -- {common.source_label(r['source'])}"
+        if r["query"]:
+            name += f" -- \"{r['query']}\""
+        value = (f"{r['n_found'] if r['n_found'] is not None else '?'} result(s), "
+                 f"{r['n_new'] if r['n_new'] is not None else '?'} new")
+        if r["errors"]:
+            value += f"\nError: {r['errors'][:200]}"
+        embed.add_field(name=name[:256], value=value[:1024], inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@tree.command(name="notifications", description="History of notifications sent (postings, mail, digest, cleanup)")
+@app_commands.describe(limit="How many notifications to show (default 10, max 20)")
+async def notifications_cmd(interaction: discord.Interaction, limit: app_commands.Range[int, 1, 20] = 10):
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT kind, title, message, offer_ids, created_at FROM notifications ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    if not rows:
+        embed = base_embed("Notifications", description="No notification sent yet.")
+        await interaction.response.send_message(embed=embed)
+        return
+
+    embed = base_embed(f"Notifications -- {len(rows)} most recent")
+    for r in reversed(rows):  # oldest to newest, more natural to read
+        name = f"{r['created_at']} -- ({r['kind']}) {r['title']}"[:256]
+        value = r["message"][:900]
+        offer_ids = json.loads(r["offer_ids"]) if r["offer_ids"] else []
+        if offer_ids:
+            value += "\nPostings: " + ", ".join(f"#{i}" for i in offer_ids)
+        embed.add_field(name=name, value=value[:1024], inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@tree.command(name="quotas", description="This month's usage for quota-limited APIs (Adzuna, Hunter.io, Snov.io)")
+async def quotas(interaction: discord.Interaction):
+    from core.api_usage import quota_summary
+
+    labels = {"adzuna": "Adzuna", "hunter": "Hunter.io", "snov": "Snov.io"}
+    embed = base_embed("This month's API quotas")
+    for q in quota_summary():
+        label = labels.get(q["source"], q["source"])
+        exhausted = " (exhausted)" if q["remaining"] <= 0 else ""
+        embed.add_field(
+            name=label,
+            value=f"{q['used']}/{q['limit']} used -- {q['remaining']} remaining{exhausted}",
+            inline=True,
+        )
+    await interaction.response.send_message(embed=embed)
+
+
+def _disable_draft_buttons(view: discord.ui.View, uid: str) -> None:
+    """Disables both buttons (send + delete) of the same draft after an
+    action on either -- same logic as _disable_offer_buttons above."""
+    for child in view.children:
+        if getattr(child, "uid", None) == uid:
+            child.disabled = True
+
+
+class SendDraftButton(discord.ui.Button):
+    """/drafts' "Send" button -- sends the draft as-is (email_tools.
+    envoyer_brouillon_existant re-reads its FULL content, the embed's preview
+    is truncated to 200 characters) then deletes it from the Drafts folder.
+    Respects the same daily anti-ban cap as ConfirmSendView above -- otherwise
+    it could be used to bypass that cap by resending from an already-written
+    draft over and over."""
+
+    def __init__(self, uid: str):
+        super().__init__(label="Send", style=discord.ButtonStyle.success)
+        self.uid = uid
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        with get_connection() as conn:
+            sent_today = conn.execute(
+                "SELECT COUNT(*) c FROM run_log WHERE run_type='email_send' AND date(started_at) = date('now')"
+            ).fetchone()["c"]
+        if sent_today >= GMAIL_DAILY_SEND_CAP:
+            await interaction.response.send_message(
+                f"Daily cap of {GMAIL_DAILY_SEND_CAP} sends reached -- the draft stays pending, try again tomorrow.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: email_tools.envoyer_brouillon_existant(self.uid)
+        )
+        failed = result.startswith("Error") or result.startswith("No draft")
+        if not failed:
+            with get_connection() as conn:
+                conn.execute(
+                    "INSERT INTO run_log (run_type, source, started_at, finished_at, n_found, n_new) "
+                    "VALUES ('email_send', ?, datetime('now'), datetime('now'), 1, 1)",
+                    (email_tools.SEND_ACCOUNT,),
+                )
+            _disable_draft_buttons(self.view, self.uid)
+            await interaction.message.edit(view=self.view)
+        await interaction.followup.send(result, ephemeral=True)
+
+
+class DeleteDraftButton(discord.ui.Button):
+    """/drafts' "Delete" button -- irreversible on the IMAP side, same logic
+    as email_tools.supprimer_brouillon (also used by supprimer_brouillon_mail,
+    chat_agent.py)."""
+
+    def __init__(self, uid: str):
+        super().__init__(label="Delete", style=discord.ButtonStyle.danger)
+        self.uid = uid
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: email_tools.supprimer_brouillon(self.uid)
+        )
+        if not result.startswith("Error"):
+            _disable_draft_buttons(self.view, self.uid)
+            await interaction.message.edit(view=self.view)
+        await interaction.followup.send(result, ephemeral=True)
+
+
+MAX_DRAFT_BUTTONS = 10  # 2 buttons/draft -- stays under Discord's 25-component limit
+
+
+class DraftsView(discord.ui.View):
+    def __init__(self, drafts: list[dict]) -> None:
+        super().__init__(timeout=3600)
+        for d in drafts[:MAX_DRAFT_BUTTONS]:
+            self.add_item(SendDraftButton(d["uid"]))
+            self.add_item(DeleteDraftButton(d["uid"]))
+
+
+@tree.command(name="drafts", description="Pending reply drafts on the sending account (Gmail)")
+async def drafts_cmd(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        drafts = await asyncio.get_event_loop().run_in_executor(None, email_tools.lister_brouillons)
+    except Exception as e:
+        embed = base_embed("Error", color=COLOR_ERROR, description=f"Couldn't read the drafts: {e}")
+        await interaction.followup.send(embed=embed)
+        return
+
+    if not drafts:
+        embed = base_embed("Pending drafts", description="No pending draft.")
+        await interaction.followup.send(embed=embed)
+        return
+
+    description = None
+    if len(drafts) > MAX_DRAFT_BUTTONS:
+        description = f"{len(drafts) - MAX_DRAFT_BUTTONS} more not shown here (Discord's button limit)."
+    embed = base_embed(f"Pending drafts ({len(drafts)})", color=COLOR_PAUSED, description=description)
+    for d in drafts[:MAX_DRAFT_BUTTONS]:
+        destinataire = d["destinataire"]
+        if isinstance(destinataire, (list, tuple)):
+            destinataire = ", ".join(destinataire)
+        embed.add_field(
+            name=(d["sujet"] or "(no subject)")[:256],
+            value=f"To {destinataire} -- {d['date']}\n{d['apercu']}"[:1024],
+            inline=False,
+        )
+    await interaction.followup.send(embed=embed, view=DraftsView(drafts))
 
 
 @tree.command(name="applied", description="Marks a posting as already applied to (drops it from /offers)")
@@ -281,6 +734,37 @@ async def applied(interaction: discord.Interaction, offer_id: int):
     embed = base_embed(
         "Application recorded", color=COLOR_ACTIVE,
         description=f"**#{offer_id}** dropped from the lists: {row['title']} — {row['company']}",
+    )
+    await interaction.response.send_message(embed=embed)
+
+
+@tree.command(name="exclude", description="Manually excludes a posting (no longer appears in /offers, /status, searches)")
+@app_commands.describe(offer_id="Posting number", reason="Optional note, just for the confirmation message (not stored)")
+async def exclude(interaction: discord.Interaction, offer_id: int, reason: str = ""):
+    with get_connection() as conn:
+        row = conn.execute("SELECT title, company, status FROM offers WHERE id = ?", (offer_id,)).fetchone()
+        if not row:
+            embed = base_embed("Posting not found", color=COLOR_ERROR, description=f"No posting #{offer_id}.")
+            await interaction.response.send_message(embed=embed)
+            return
+        if row["status"] == "applied":
+            embed = base_embed(
+                "Already applied", color=COLOR_PAUSED,
+                description=f"#{offer_id} is already marked applied -- undo that first (via `/ask`) if you want to exclude it.",
+            )
+            await interaction.response.send_message(embed=embed)
+            return
+        if row["status"] == "excluded":
+            embed = base_embed(
+                "Already excluded", color=COLOR_PAUSED, description=f"#{offer_id} ({row['title']}) is already excluded.",
+            )
+            await interaction.response.send_message(embed=embed)
+            return
+        conn.execute("UPDATE offers SET status = 'excluded' WHERE id = ?", (offer_id,))
+    detail = f" ({reason})" if reason else ""
+    embed = base_embed(
+        "Posting excluded", color=COLOR_ERROR,
+        description=f"**#{offer_id}** excluded: {row['title']} — {row['company']}{detail}",
     )
     await interaction.response.send_message(embed=embed)
 
@@ -464,6 +948,55 @@ async def ask(interaction: discord.Interaction, text: str):
     for i, chunk in enumerate(chunks):
         kwargs = {"view": view} if (view is not None and i == len(chunks) - 1) else {}
         await interaction.followup.send(chunk, **kwargs)
+
+
+@tree.command(name="gaps", description="AI analysis of the gaps that show up most often in poorly-scored postings")
+async def gaps(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        resultat = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, lambda: axes_progression_tool.invoke({})),
+            timeout=AGENT_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        embed = base_embed(
+            "Timed out", color=COLOR_ERROR,
+            description=f"The analysis took longer than {AGENT_TIMEOUT_SECONDS}s, try again later.",
+        )
+        await interaction.followup.send(embed=embed)
+        return
+    embed = base_embed("Gaps to work on", description=resultat[:4000])
+    await interaction.followup.send(embed=embed)
+
+
+@tree.command(name="digest", description="Triggers the weekly digest right now (summary of the week)")
+async def digest(interaction: discord.Interaction):
+    if daemon_state.run_weekly_digest_fn is None:
+        embed = base_embed(
+            "Daemon not active", color=COLOR_ERROR,
+            description="The weekly digest is handled by the scheduled daemon (daemon.py), which isn't active here.",
+        )
+        await interaction.response.send_message(embed=embed)
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, daemon_state.run_weekly_digest_fn),
+            timeout=AGENT_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        embed = base_embed(
+            "Timed out", color=COLOR_ERROR,
+            description=f"The digest took longer than {AGENT_TIMEOUT_SECONDS}s, try again later.",
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+    embed = base_embed(
+        "Digest triggered", color=COLOR_ACTIVE,
+        description="The weekly summary was just computed -- it shows up in this channel if there's "
+                    "anything to report this week.",
+    )
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 if __name__ == "__main__":

@@ -101,6 +101,22 @@ def unarchive_cover_letter(conn: Connection, offer_id: int) -> None:
 
 SPONTANEOUS_LEAD_SOURCES = ("lba_recruiter", "labonneboite")
 
+# Readable labels for the `source` column -- used by /sources, /log, and
+# strategie_recherche so a raw technical key (e.g. "jobspy") never leaks into
+# a user-facing reply.
+SOURCE_LABELS = {
+    "lba": "La Bonne Alternance",
+    "lba_recruiter": "La Bonne Alternance (spontaneous-application lead)",
+    "adzuna": "Adzuna",
+    "jobspy": "JobSpy (Indeed)",
+    "francetravail": "France Travail",
+    "labonneboite": "La Bonne Boite (spontaneous-application lead)",
+}
+
+
+def source_label(source: str | None) -> str:
+    return SOURCE_LABELS.get(source or "", source or "?")
+
 
 def offer_type_label(source: str | None) -> str:
     """Distinguishes a real published listing from a spontaneous-application
