@@ -11,9 +11,11 @@ Email watching is only scheduled if at least one GMAIL_ACCOUNT_i is set in
 .env (see start() below) -- without that, a Discord+discovery-only deployment
 starts cleanly and never touches IMAP.
 
-Kill switch: /pause and /resume (discord_bot.py) toggle core.daemon_state.paused,
-checked at the start of every scheduled job.
+Kill switch: /pause and /resume (discord_bot.py) and the terminal UI's pause
+toggle (cli.py) all go through core.daemon_state.set_paused(), checked here
+via is_paused() at the start of every scheduled job.
 """
+import asyncio
 import logging
 import os
 import random
@@ -53,7 +55,7 @@ scheduler = BackgroundScheduler()
 
 
 def _run_discovery() -> None:
-    if daemon_state.paused:
+    if daemon_state.is_paused():
         log.info("discovery skipped (paused)")
         return
     log.info("=== run discovery (JobSpy) ===")
@@ -92,7 +94,7 @@ def _run_discovery() -> None:
 
 
 def _run_email_watch() -> None:
-    if daemon_state.paused:
+    if daemon_state.is_paused():
         log.info("email watch skipped (paused)")
         return
     log.info("=== run email_watch ===")
@@ -109,11 +111,12 @@ def _run_email_watch() -> None:
         )
 
 
-def _run_weekly_digest() -> None:
-    """Weekly summary -- not subject to the /pause kill switch: this isn't a
-    call to an external source (so no anti-ban concern), just a local
-    database read + a Discord message, and the user will probably still want
-    to receive it even with active discovery paused for a while.
+def _build_weekly_digest() -> dict | None:
+    """Computes this week's numbers -- split out of _run_weekly_digest() so
+    the terminal UI's on-demand "Run digest now" button (tui/panes/status.py)
+    can show the exact same figures it just sent to Discord/desktop, rather
+    than re-deriving its own copy or scraping the flattened text back out of
+    the notifications table. Returns None if there's nothing to report.
 
     Raw string date comparison (not datetime.fromisoformat): offers.first_seen_at
     and applications.sent_at are in SQLite's datetime('now') format
@@ -121,59 +124,84 @@ def _run_weekly_digest() -> None:
     from imap_tools) -- lexicographic `>=` comparison stays correct in both
     cases for a 7-day window (only a second-exact tie right at the boundary
     would be ambiguous, no impact here)."""
+    since = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        n_new = conn.execute(
+            "SELECT COUNT(*) c FROM offers WHERE first_seen_at >= ?", (since,)
+        ).fetchone()["c"]
+        by_source = conn.execute(
+            "SELECT source, COUNT(*) c FROM offers WHERE first_seen_at >= ? GROUP BY source ORDER BY c DESC",
+            (since,),
+        ).fetchall()
+        top = conn.execute(
+            "SELECT title, company, score FROM offers WHERE first_seen_at >= ? AND score IS NOT NULL "
+            "AND status NOT IN ('applied', 'excluded', 'expired') ORDER BY score DESC LIMIT 5",
+            (since,),
+        ).fetchall()
+        n_applied = conn.execute(
+            "SELECT COUNT(*) c FROM applications WHERE status='applied' AND sent_at >= ?", (since,)
+        ).fetchone()["c"]
+        n_letters_pending = conn.execute(
+            "SELECT COUNT(*) c FROM applications WHERE status='draft' AND cover_letter_path IS NOT NULL"
+        ).fetchone()["c"]
+        replies = conn.execute(
+            "SELECT category, COUNT(*) c FROM emails WHERE received_at >= ? "
+            "AND category IN ('recruteur', 'entretien', 'refus') GROUP BY category",
+            (since,),
+        ).fetchall()
+        stale_since = (datetime.now() - timedelta(days=STALE_DRAFT_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+        stale_drafts = conn.execute(
+            """SELECT o.id, o.title, o.company, a.drafted_at FROM applications a
+               JOIN offers o ON o.id = a.offer_id
+               WHERE a.status = 'draft' AND a.cover_letter_path IS NOT NULL AND a.drafted_at <= ?
+               ORDER BY a.drafted_at ASC LIMIT 10""",
+            (stale_since,),
+        ).fetchall()
+
+    if n_new == 0 and n_applied == 0 and not replies and not stale_drafts:
+        return None
+
+    lines = [f"This week's summary -- {n_new} new offer(s) found"]
+    if by_source:
+        lines.append("By source: " + ", ".join(f"{r['source']}: {r['c']}" for r in by_source))
+    if top:
+        lines.append("Best offers this week:")
+        lines += [f"[{r['score']}] {r['title']} -- {r['company']}" for r in top]
+    lines.append(f"Applications sent this week: {n_applied}")
+    lines.append(f"Letter drafts pending (current total, not just this week): {n_letters_pending}")
+    if replies:
+        lines.append("Replies received this week: " + ", ".join(f"{r['category']}: {r['c']}" for r in replies))
+    if stale_drafts:
+        lines.append(f"Drafts pending for more than {STALE_DRAFT_DAYS} days:")
+        lines += [f"#{r['id']} {r['title']} -- {r['company']} (since {r['drafted_at']})" for r in stale_drafts]
+
+    return {
+        "n_new": n_new, "by_source": by_source, "top": top, "n_applied": n_applied,
+        "n_letters_pending": n_letters_pending, "replies": replies, "stale_drafts": stale_drafts,
+        "text": "\n".join(lines),
+    }
+
+
+def _run_weekly_digest() -> str | None:
+    """Weekly summary -- not subject to the /pause kill switch: this isn't a
+    call to an external source (so no anti-ban concern), just a local
+    database read + a Discord message, and the user will probably still want
+    to receive it even with active discovery paused for a while.
+
+    Returns the digest text (None if there was nothing to report, or the
+    build failed) -- the scheduled job ignores it, but the terminal UI's
+    on-demand button uses it to show what was just sent, right there in the
+    interface, instead of only as a Discord/desktop notification."""
     log.info("=== weekly digest ===")
     try:
-        since = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
-        with get_connection() as conn:
-            n_new = conn.execute(
-                "SELECT COUNT(*) c FROM offers WHERE first_seen_at >= ?", (since,)
-            ).fetchone()["c"]
-            by_source = conn.execute(
-                "SELECT source, COUNT(*) c FROM offers WHERE first_seen_at >= ? GROUP BY source ORDER BY c DESC",
-                (since,),
-            ).fetchall()
-            top = conn.execute(
-                "SELECT title, company, score FROM offers WHERE first_seen_at >= ? AND score IS NOT NULL "
-                "AND status NOT IN ('applied', 'excluded', 'expired') ORDER BY score DESC LIMIT 5",
-                (since,),
-            ).fetchall()
-            n_applied = conn.execute(
-                "SELECT COUNT(*) c FROM applications WHERE status='applied' AND sent_at >= ?", (since,)
-            ).fetchone()["c"]
-            n_letters_pending = conn.execute(
-                "SELECT COUNT(*) c FROM applications WHERE status='draft' AND cover_letter_path IS NOT NULL"
-            ).fetchone()["c"]
-            replies = conn.execute(
-                "SELECT category, COUNT(*) c FROM emails WHERE received_at >= ? "
-                "AND category IN ('recruteur', 'entretien', 'refus') GROUP BY category",
-                (since,),
-            ).fetchall()
-            stale_since = (datetime.now() - timedelta(days=STALE_DRAFT_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
-            stale_drafts = conn.execute(
-                """SELECT o.id, o.title, o.company, a.drafted_at FROM applications a
-                   JOIN offers o ON o.id = a.offer_id
-                   WHERE a.status = 'draft' AND a.cover_letter_path IS NOT NULL AND a.drafted_at <= ?
-                   ORDER BY a.drafted_at ASC LIMIT 10""",
-                (stale_since,),
-            ).fetchall()
-
-        if n_new == 0 and n_applied == 0 and not replies and not stale_drafts:
+        data = _build_weekly_digest()
+        if data is None:
             log.info("weekly digest: nothing to report this week, no notification")
-            return
+            return None
 
-        lines = [f"This week's summary -- {n_new} new offer(s) found"]
-        if by_source:
-            lines.append("By source: " + ", ".join(f"{r['source']}: {r['c']}" for r in by_source))
-        if top:
-            lines.append("Best offers this week:")
-            lines += [f"[{r['score']}] {r['title']} -- {r['company']}" for r in top]
-        lines.append(f"Applications sent this week: {n_applied}")
-        lines.append(f"Letter drafts pending (current total, not just this week): {n_letters_pending}")
-        if replies:
-            lines.append("Replies received this week: " + ", ".join(f"{r['category']}: {r['c']}" for r in replies))
-        if stale_drafts:
-            lines.append(f"Drafts pending for more than {STALE_DRAFT_DAYS} days:")
-            lines += [f"#{r['id']} {r['title']} -- {r['company']} (since {r['drafted_at']})" for r in stale_drafts]
+        n_new, by_source, top = data["n_new"], data["by_source"], data["top"]
+        n_applied, n_letters_pending = data["n_applied"], data["n_letters_pending"]
+        replies, stale_drafts = data["replies"], data["stale_drafts"]
 
         embed = base_embed(f"{n_new} new offer(s) this week", color=COLOR_DEFAULT)
         if by_source:
@@ -202,7 +230,8 @@ def _run_weekly_digest() -> None:
                 value="\n".join(f"**#{r['id']}** {r['title']} -- {r['company']}" for r in stale_drafts)[:1024],
                 inline=False,
             )
-        notify_all("hobot -- weekly digest", "\n".join(lines), embed=embed, kind="digest")
+        notify_all("hobot -- weekly digest", data["text"], embed=embed, kind="digest")
+        return data["text"]
     except Exception:
         log.error("weekly digest failed:\n%s", traceback.format_exc())
         notify_all(
@@ -211,6 +240,7 @@ def _run_weekly_digest() -> None:
                               description="Check the daemon logs for details."),
             kind="error",
         )
+        return None
 
 
 def _first_run_at(run_type: str, interval_minutes: int, max_initial_delay_minutes: int) -> datetime:
@@ -290,8 +320,31 @@ def start() -> None:
         DISCOVERY_HOURS_WEEKDAY, DISCOVERY_JITTER_MIN, DISCOVERY_HOURS_WEEKEND, WEEKLY_DIGEST_DAY, WEEKLY_DIGEST_HOUR,
     )
 
+    asyncio.run(_run())
+
+
+async def _run() -> None:
+    """Discord is optional to start the process (see
+    tools/discord_bot.py::DISCORD_ENABLED) -- it doesn't have to be
+    configured for the scheduler alone to run; the terminal UI (cli.py) reads
+    and writes the same database from its own separate process regardless,
+    Discord or no Discord. `async with client:` (rather than the simpler
+    client.run()) is discord.py's own documented pattern for running the
+    client alongside other async code in the same loop the scheduler was
+    started from."""
+    from tools.discord_bot import DISCORD_ENABLED
+
+    if not DISCORD_ENABLED:
+        log.info("Discord not configured (DISCORD_BOT_TOKEN/DISCORD_CHANNEL_ID missing from "
+                  ".env) -- Discord disabled for this run. Set both to enable it.")
+        log.warning("Discord disabled -- running headless (scheduler only). Use the terminal UI "
+                     "(cli.py) to look at what it's finding.")
+        await asyncio.Event().wait()  # park the loop open; the scheduler's own threads do the real work
+        return
+
     from tools.discord_bot import TOKEN, client
-    client.run(TOKEN)  # blocking, the main asyncio loop
+    async with client:
+        await client.start(TOKEN)
 
 
 if __name__ == "__main__":

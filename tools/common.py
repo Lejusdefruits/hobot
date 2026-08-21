@@ -146,6 +146,14 @@ def source_label(source: str | None) -> str:
     return SOURCE_LABELS.get(source or "", source or "?")
 
 
+# Readable labels for offers.status -- shared between /offer (discord_bot.py)
+# and the terminal UI's offer detail screen (tui/modals.py).
+STATUS_LABELS = {
+    "applied": "Applied", "excluded": "Excluded", "scored": "Scored",
+    "new": "Not scored yet", "expired": "Expired (dead link)",
+}
+
+
 def offer_type_label(source: str | None) -> str:
     """Distinguishes a real published listing from a spontaneous-application
     lead (a company flagged as a potential employer, with no actual listing

@@ -1,9 +1,11 @@
 # hobot
 
-A job-hunting agent that runs in the background and is driven from Discord:
-finds postings, scores them against your profile, writes its own cover
-letters, optionally watches your inbox and drafts replies, and can dig up
-company contacts. Runs on a local LLM (Ollama), no paid API required to work.
+A job-hunting agent that runs in the background and is driven from Discord
+and/or a terminal UI: finds postings, scores them against your profile,
+writes its own cover letters, optionally watches your inbox and drafts
+replies, and can dig up company contacts. Runs on a local LLM (Ollama) by
+default, no paid API required to work -- a cloud key (OpenAI/Anthropic) is
+a drop-in alternative if you'd rather not run a model locally.
 
 ## What it does
 
@@ -14,12 +16,16 @@ company contacts. Runs on a local LLM (Ollama), no paid API required to work.
 - **Checks that postings are still live**: one that's disappeared from the
   source site (position filled, listing pulled) gets flagged and dropped
   instead of sitting in the list looking just as valid as everything else.
-- **Runs from Discord**: `/status`, `/offers`, `/offer <id>`, `/applied`,
-  `/funnel` (where things stall in the application process), `/pause`,
-  `/resume`, and `/ask "<anything>"` for everything else: looking up a
-  specific posting, excluding a listing, checking the score breakdown,
-  drafting or fixing an email, changing your profile on the fly. What
-  `/ask` covers in more detail is further down.
+- **Runs from Discord and/or a terminal UI**: `/status`, `/offers`,
+  `/offer <id>`, `/applied`, `/funnel` (where things stall in the application
+  process), `/pause`, `/resume`, and `/ask "<anything>"` for everything else:
+  looking up a specific posting, excluding a listing, checking the score
+  breakdown, drafting or fixing an email, changing your profile on the fly.
+  What `/ask` covers in more detail is further down. The terminal UI (`python
+  cli.py`, below) covers the same ground with a full-screen dashboard --
+  browsable postings/applications/drafts and a chat pane -- instead of slash
+  commands. Pick one interface or run both side by side; they read and write
+  the same database, so nothing needs syncing between them.
 - **No CV required to get started**: describe what you're looking for in one
   sentence in Discord ("I'm a Python developer looking for something in
   Lyon") and it builds a structured profile from that. Attaching a CV (PDF
@@ -33,13 +39,23 @@ company contacts. Runs on a local LLM (Ollama), no paid API required to work.
 
 ## Required vs. optional
 
-Exactly one thing is required for this to run at all: **Discord + a local
-Ollama model**. Everything else turns on by filling in its section of `.env`;
-left empty, the matching feature just stays off, nothing breaks.
+Exactly one thing is required for this to run at all: **an LLM**, local
+(Ollama, the default, no paid API) or a cloud key (OpenAI/Anthropic/any
+OpenAI-compatible endpoint) if you'd rather not run a model yourself. Job
+discovery (JobSpy) works out of the box either way. Discord is an optional
+interface -- turn it on or not (a fully headless install still runs discovery
+and scoring on schedule; the terminal UI, `python cli.py`, always works
+regardless, since it's a separate process against the same database rather
+than something the daemon has to be running for). Everything else turns on
+by filling in its section of `.env`; left empty, the matching feature just
+stays off, nothing breaks.
 
 | Feature | Required? | What it needs |
 |---|---|---|
-| Discord bot + job discovery (JobSpy) | **Yes** | Discord token + local Ollama |
+| LLM (scoring, letters, `/ask`) | **Yes** | Local Ollama (default, free) or a cloud key (`LLM_PROVIDER`) |
+| Job discovery (JobSpy) | **Yes** | Nothing extra -- scraping, no API key |
+| Discord interface | No | A Discord bot token |
+| Terminal UI | No | Nothing extra -- `python cli.py` |
 | French source, apprenticeship only | No | La Bonne Alternance — **France only**, free |
 | French source, any contract type (filterable) | No | France Travail "Offres d'emploi v2" — **France only**, free |
 | General-purpose, multi-country source | No | Adzuna — free up to 2500 calls/month |
@@ -57,12 +73,13 @@ all the same day.
 
 ### Requirements
 
-Python 3.10 or newer (built and tested on 3.12), `git`, and something to run
-an Ollama model on (a 7-8B model with tool-calling support runs fine on a
-consumer GPU, or CPU-only if you're fine with slower replies). The systemd
-instructions below assume Linux; on macOS or Windows, `python daemon.py` in a
-terminal that stays open does the same thing, just without automatic restart
-on boot.
+Python 3.10 or newer (built and tested on 3.12), `git`, and either something
+to run an Ollama model on (a 7-8B model with tool-calling support runs fine on
+a consumer GPU, or CPU-only if you're fine with slower replies) or a cloud LLM
+key (see "Cloud LLM" below) if you'd rather skip running a model yourself. The
+systemd instructions below assume Linux; on macOS or Windows, `python
+daemon.py` in a terminal that stays open does the same thing, just without
+automatic restart on boot.
 
 ### 1. Ollama
 
@@ -87,6 +104,30 @@ moving on:
 curl http://localhost:11434/api/tags
 ```
 
+### Cloud LLM (optional alternative to Ollama)
+
+Skip the Ollama install entirely and point hobot at a cloud provider instead
+-- covers scoring, letters, `/ask`, and everything else that calls the LLM,
+with no other code path affected. Set in `.env`:
+
+```bash
+LLM_PROVIDER=openai            # or: anthropic
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini       # any OpenAI model with tool-calling support
+OPENAI_BASE_URL=               # optional: OpenRouter/Groq/any OpenAI-compatible endpoint instead of OpenAI itself
+```
+
+or, for Anthropic:
+
+```bash
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-sonnet-4-5-20250929
+```
+
+`LLM_PROVIDER=ollama` (the default) ignores both blocks entirely -- there's
+no need to remove them if you switch back later.
+
 ### 2. Clone the repo and install dependencies
 
 ```bash
@@ -97,7 +138,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Create the Discord bot
+### 3. Create the Discord bot (optional -- skip if you only want the terminal UI)
 
 1. Go to [discord.com/developers/applications](https://discord.com/developers/applications),
    click **New Application**, give it a name.
@@ -121,17 +162,26 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Open `.env` and fill in at least `OLLAMA_MODEL` (the exact name from step 1),
-`DISCORD_BOT_TOKEN`, and `DISCORD_CHANNEL_ID`. Everything else can stay empty
-for now. Run it:
+Open `.env` and fill in your LLM (`OLLAMA_MODEL`, or the cloud block above),
+and `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` if you want Discord. Everything
+else can stay empty for now. Run it:
 
 ```bash
 python daemon.py
 ```
 
-The bot should connect and show up online on your server within a few
-seconds. `Ctrl+C` to stop it, the "running continuously" section below covers
-leaving it running without a terminal open.
+Discord (if configured) should connect and show up online on your server
+within a few seconds. `Ctrl+C` to stop it, the "running continuously" section
+below covers leaving it running without a terminal open.
+
+In a second terminal, whether or not Discord is configured:
+
+```bash
+python cli.py
+```
+
+opens the terminal UI -- a full-screen dashboard against the same database
+`daemon.py` is writing to. More on it in "Terminal UI" below.
 
 ### 5. Set your profile
 
@@ -297,6 +347,48 @@ searches/month. Key on [hunter.io/api](https://hunter.io/api), in
 free plan, 50 credits/month, no card required. Credentials on
 [snov.io/api](https://snov.io/api), in `SNOV_USER_ID` and `SNOV_API_SECRET`.
 
+## Terminal UI
+
+A second interface onto the exact same engine Discord talks to -- postings,
+applications, drafts, profile, chat, and every report Discord's slash
+commands cover, as a full-screen dashboard instead of commands. It's its own
+separate process, not something `daemon.py` runs for you (a systemd-managed
+daemon has no terminal attached for a full-screen app to take over) -- start
+it whenever you want to look at something, close it when you're done:
+
+```bash
+python cli.py
+```
+
+Seven tabs (`F1`-`F7` to jump between them, or click/Tab through them):
+
+- **Status** -- active/paused, the scoring backlog, the best open posting,
+  last discovery/mail-check runs, and buttons for pause/resume, an on-demand
+  weekly digest, and a reset (wipes everything, asks for confirmation first).
+- **Offers** -- the best-scored open postings; Enter on a row opens the full
+  posting with mark-applied / exclude / tailor-CV / edit-and-save-the-letter
+  actions, same as the equivalent Discord buttons.
+- **Applications**, **Drafts** (send/delete, same daily send cap as
+  everywhere else), **Profile** (view + upload a CV; free-text profile
+  updates go through Chat instead, same as Discord's `/profile` flow).
+- **Chat** -- the same agent `/ask` talks to, full conversation history,
+  proposed email sends shown with their own confirm button.
+- **Reports** -- sources, quotas, search log, search strategy,
+  notifications, funnel, score breakdown, and an on-demand gap analysis.
+
+No host, port, or login to configure -- it never listens on the network,
+it's just a program you run in your own terminal, so there's nothing for
+anyone else to reach. It talks to the same `hobot.db` (and the same
+`checkpoints.db` conversation memory) `daemon.py` does, whether or not the
+daemon happens to be running at the time; the only thing that needed real
+cross-process wiring was pause/resume, which is why that's stored in the
+database now instead of only in the daemon's memory.
+
+`CLI_CHAT_THREAD_ID` (default `cli`): the Chat pane uses its own fixed
+conversation, separate from any Discord user's, so the two never interleave
+unexpectedly by default. Set it to a real Discord user id instead if you want
+one shared conversation across both interfaces.
+
 ## Running it continuously
 
 In development, `python daemon.py` in a terminal is enough. To run it in the
@@ -316,7 +408,9 @@ Managing it: `systemctl --user status|restart|stop hobot`,
 `journalctl --user -u hobot -f` for live logs. The service is deliberately
 constrained (2GB RAM cap, low CPU priority, restarts after a crash but gives
 up after 5 failures in 10 minutes) so a problem in this process can't drag
-down the rest of the machine.
+down the rest of the machine. This unit is the daemon only -- `python cli.py`
+stays something you run by hand in your own terminal whenever you want it,
+whether or not this service is running.
 
 ## First steps in Discord
 
@@ -362,19 +456,23 @@ right one.
 ## Architecture
 
 ```
-daemon.py            — single process: scheduler (APScheduler) + Discord bot
+daemon.py            — the daemon process: scheduler (APScheduler) + Discord bot (optional)
+cli.py                — terminal UI entry point (its own separate process, see "Terminal UI" above)
 graphs/
   discovery_graph.py  — fetch (JobSpy + French sources) -> dedup -> score (LLM) -> letters -> log
   email_graph.py      — fetch mail -> classify (LLM) -> draft replies
-  chat_agent.py        — the agent behind /ask (ReAct, tool-calling)
+  chat_agent.py        — the agent behind /ask and the terminal UI's Chat pane (ReAct, tool-calling,
+                          persistent SqliteSaver memory shared between both interfaces)
 core/
-  db.py               — SQLite schema (offers, applications, user_profile...)
-  llm.py              — shared Ollama client
+  db.py               — SQLite schema (offers, applications, user_profile, daemon_flags...)
+  daemon_state.py      — pause flag (DB-backed, cross-process) + live scheduler ref (in-process only)
+  queries.py          — read queries shared by discord_bot.py and tui/ (single source of truth)
+  llm.py, llm_provider.py — shared chat entry point + provider factory (Ollama/OpenAI/Anthropic)
   profile.py          — CV or free text -> structured profile
   circuit_breaker.py  — automatic backoff per failing source (anti-ban)
   locations.py         — French city registry -> coordinates/INSEE code (optional)
   france_travail_auth.py — shared OAuth2 for the France Travail Connect APIs (optional)
-  api_usage.py        — monthly quota tracking (Adzuna)
+  api_usage.py        — monthly quota tracking (Adzuna, Hunter.io, Snov.io)
 tools/
   sources_jobspy.py   — discovery connector (no key required)
   sources_lba.py, sources_adzuna.py, sources_francetravail.py,
@@ -385,13 +483,19 @@ tools/
   link_check.py       — flags postings whose link has died
   documents.py        — renders cover letters to PDF
   cv_tailor.py        — edits your own uploaded CV in place, per offer (optional)
-  discord_bot.py       — slash commands + bridge to the agent
+  discord_bot.py       — slash commands + bridge to the agent (optional interface)
+tui/                  — the terminal UI (see "Terminal UI" above)
+  app.py              — Textual App: tabs, theme, cross-pane wiring
+  modals.py            — confirmation dialogs, text prompts, the offer detail screen
+  panes/               — one module per tab, each reusing core/queries.py, tools/common.py, etc.
+  app.tcss             — stylesheet
 ```
 
 Every posting goes through: discovery -> dedup (against the database and
 across sources) -> LLM scoring (against your profile) -> above a threshold,
 an automatic cover letter. Nothing ever gets sent automatically anywhere,
-applications and emails stay drafts until an explicit human action.
+applications and emails stay drafts until an explicit human action, on
+either interface.
 
 ## Search tip
 
@@ -405,8 +509,8 @@ that at any point.
 A few rules held everywhere in the code, not just stated here:
 
 - **No automatic email send, ever.** The agent drafts one on its own
-  initiative when a posting is worth it; only a human clicking a button in
-  Discord triggers an actual SMTP send.
+  initiative when a posting is worth it; only a human clicking a button --
+  in Discord or the terminal UI -- triggers an actual SMTP send.
 - **Automatic backoff per failing source** (`core/circuit_breaker.py`): a
   source that errors out gets backed off progressively (2h, doubling on each
   failure, capped at 24h) instead of retried without limit, to stay
@@ -428,10 +532,6 @@ to take it further:
 
 - Search keywords come straight from the profile, not adjusted automatically
   run to run based on results.
-- No unified quota dashboard across every API (Adzuna has its own monthly
-  guard, Hunter/Snov/Pappers don't here).
-- No dedicated command to send already-generated files (CV/letter) back
-  through Discord.
 
 None of that stops the bot from working correctly for the main loop: finding
 postings, sorting them, writing letters, handling mail.

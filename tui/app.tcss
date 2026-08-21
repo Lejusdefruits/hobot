@@ -1,0 +1,186 @@
+Screen {
+    background: $background;
+}
+
+TabbedContent {
+    height: 1fr;
+}
+
+.pane {
+    padding: 1 2;
+    height: 1fr;
+}
+
+.pane-title {
+    text-style: bold;
+    color: $text;
+    margin-bottom: 1;
+}
+
+.hint {
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+.card-row {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.card {
+    border: round $primary;
+    padding: 1 2;
+    width: 1fr;
+    height: auto;
+    margin-right: 1;
+}
+
+.card:last-of-type {
+    margin-right: 0;
+}
+
+.card-label {
+    color: $text-muted;
+}
+
+.card-value {
+    text-style: bold;
+    color: $text;
+}
+
+.card-value.warn {
+    color: $warning;
+}
+
+.card-value.good {
+    color: $success;
+}
+
+.section {
+    border: round $panel-lighten-2;
+    padding: 1 2;
+    margin-bottom: 1;
+    height: auto;
+}
+
+.section-title {
+    text-style: bold underline;
+    margin-bottom: 1;
+}
+
+.button-row {
+    height: auto;
+    margin-top: 1;
+}
+
+.button-row Button {
+    margin-right: 1;
+}
+
+#toggle-pause {
+    width: 14;
+}
+
+DataTable {
+    height: 1fr;
+}
+
+.detail-body {
+    height: 1fr;
+    border: round $primary;
+    padding: 1 2;
+}
+
+.detail-label {
+    color: $text-muted;
+}
+
+TextArea {
+    height: 10;
+    border: round $primary;
+}
+
+#chat-log {
+    height: 1fr;
+    border: round $primary;
+    padding: 0 1;
+}
+
+.chat-turn {
+    margin-bottom: 1;
+}
+
+.chat-role-user {
+    color: $accent;
+    text-style: bold;
+}
+
+.chat-role-assistant {
+    color: $success;
+    text-style: bold;
+}
+
+.chat-input-row {
+    height: auto;
+    margin-top: 1;
+}
+
+#chat-input {
+    width: 1fr;
+}
+
+.pending-send {
+    border: round $warning;
+    padding: 1 2;
+    margin-top: 1;
+    height: auto;
+}
+
+ConfirmModal {
+    align: center middle;
+}
+
+ConfirmModal > Vertical {
+    width: 60;
+    height: auto;
+    border: round $warning;
+    background: $surface;
+    padding: 1 2;
+}
+
+TextPromptModal {
+    align: center middle;
+}
+
+TextPromptModal > Vertical {
+    width: 70;
+    height: auto;
+    border: round $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+OfferDetailScreen {
+    align: center middle;
+}
+
+#offer-detail-body {
+    width: 90%;
+    height: 90%;
+    border: round $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+.modal-title {
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.error-text {
+    color: $error;
+}
+
+.danger-btn {
+    background: $error;
+}

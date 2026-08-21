@@ -17,6 +17,4 @@ jinja2
 python-docx
 docxtpl
 fonttools
-fastapi
-uvicorn[standard]
-python-multipart
+textual

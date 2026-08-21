@@ -146,6 +146,16 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
+
+-- Single-row kill switch, read by daemon.py before every scheduled job and
+-- written by /pause /resume (Discord) and the terminal UI's own pause
+-- toggle. DB-backed rather than a plain module global (core/daemon_state.py)
+-- because the terminal UI runs as its own separate process -- it has no
+-- access to the daemon's in-memory state, only what's in this database.
+CREATE TABLE IF NOT EXISTS daemon_flags (
+    id      INTEGER PRIMARY KEY CHECK (id = 1),
+    paused  INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -161,6 +171,15 @@ def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL lets a reader (e.g. a second process, once one exists) proceed while
+    # a writer is mid-transaction instead of blocking on it; busy_timeout makes
+    # a genuinely contested write retry for up to 10s instead of raising
+    # "database is locked" on Python's stdlib 5s default almost immediately.
+    # Both are cheap to reissue on every connection: WAL is a persistent file
+    # property (re-setting it is a no-op check, not real work), busy_timeout is
+    # per-connection so it does need to be set here every time.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     try:
         yield conn
         conn.commit()

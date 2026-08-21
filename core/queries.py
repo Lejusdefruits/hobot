@@ -1,6 +1,6 @@
 """Read (and a couple of destructive) queries shared by every interface --
-Discord today, the web dashboard once it exists. Plain functions, no
-`discord`/web-framework import: this is what makes "one source of truth, both
+Discord and the terminal UI (cli.py). Plain functions, no
+`discord`/UI-framework import: this is what makes "one source of truth, both
 interfaces call the same function" actually true rather than aspirational.
 The SQL here was moved verbatim out of tools/discord_bot.py's command bodies
 (each one used to be inline in an `async def`, with no separate function

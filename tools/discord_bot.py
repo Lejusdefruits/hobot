@@ -141,11 +141,12 @@ async def status(interaction: discord.Interaction):
         if job_e and job_e.next_run_time:
             next_email = job_e.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
 
+    paused = daemon_state.is_paused()
     embed = base_embed(
         "hobot status",
-        color=COLOR_PAUSED if daemon_state.paused else COLOR_ACTIVE,
+        color=COLOR_PAUSED if paused else COLOR_ACTIVE,
     )
-    embed.add_field(name="State", value="Paused" if daemon_state.paused else "Active", inline=True)
+    embed.add_field(name="State", value="Paused" if paused else "Active", inline=True)
     embed.add_field(name="Scoring queue", value=f"{backlog} unscored posting(s)", inline=True)
 
     if last_discovery:
@@ -777,7 +778,7 @@ async def exclude(interaction: discord.Interaction, offer_id: int, reason: str =
 
 @tree.command(name="pause", description="Stops scheduled checks (postings + mail) until /resume")
 async def pause(interaction: discord.Interaction):
-    daemon_state.paused = True
+    daemon_state.set_paused(True)
     embed = base_embed(
         "Monitoring paused", color=COLOR_PAUSED,
         description="Scheduled checks (postings + mail) are suspended. `/resume` to restart them.",
@@ -787,7 +788,7 @@ async def pause(interaction: discord.Interaction):
 
 @tree.command(name="resume", description="Restarts scheduled checks")
 async def resume(interaction: discord.Interaction):
-    daemon_state.paused = False
+    daemon_state.set_paused(False)
     embed = base_embed(
         "Monitoring restarted", color=COLOR_ACTIVE,
         description="Scheduled checks are back to normal.",

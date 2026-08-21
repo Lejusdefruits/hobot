@@ -1,5 +1,5 @@
 [Unit]
-Description=hobot — job discovery + Discord bot
+Description=hobot — job discovery + Discord bot (optional)
 After=network-online.target ollama.service
 
 [Service]
@@ -8,6 +8,10 @@ After=network-online.target ollama.service
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now hobot
 #   loginctl enable-linger $USER   # so it keeps running without a session open
+# This unit runs the daemon only (scheduler + Discord) -- no terminal
+# attached, so the terminal UI can't run here. Use `python cli.py` in your
+# own terminal instead, whenever you want to look at something; it talks to
+# the same database as this service.
 WorkingDirectory=/path/to/hobot
 ExecStart=/path/to/hobot/.venv/bin/python -u daemon.py
 

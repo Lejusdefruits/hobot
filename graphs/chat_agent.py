@@ -1,21 +1,26 @@
-"""chat_agent -- the conversational agent behind /ask on Discord.
+"""chat_agent -- the conversational agent behind /ask on Discord and the
+Chat pane in the terminal UI (cli.py).
 
-A ReAct agent (local LLM via Ollama, native tool-calling) triggered by a
-Discord command (/ask). This is the ONLY path that can lead to a real
-email send, and only after explicit confirmation:
+A ReAct agent (local LLM via Ollama, native tool-calling) triggered by
+either interface. This is the ONLY path that can lead to a real email send,
+and only after explicit confirmation:
 - `creer_brouillon`: always allowed, no confirmation needed.
-- `preparer_envoi_mail`: ONLY prepares, never connects to SMTP itself.
-  discord_bot.py attaches a "Confirm send" Discord button to the reply; it's
-  clicking that button (a human action, not the agent) that actually calls
+- `preparer_envoi_mail`: ONLY prepares, never connects to SMTP itself. Each
+  interface attaches its own "Confirm send" affordance to the reply (a
+  Discord button, or the terminal UI's own button next to the proposal); it's
+  that human action, not the agent, that actually calls
   email_tools.envoyer_ou_repondre_email.
 
 Conversation memory persists in checkpoints.db (SqliteSaver, thread_id =
-Discord user id, or "web" for the dashboard's single-user chat session) --
-survives a process restart, and is shared automatically between Discord and
-the web dashboard since both run in the same process against the same
-SqliteSaver instance (no sync code needed). PENDING_SENDS below is still
-RAM-only and does NOT survive a restart -- an unconfirmed send proposal is
-lost if the process restarts before it's confirmed, same as before.
+Discord user id, or CLI_CHAT_THREAD_ID -- "cli" by default -- for the
+terminal UI's single-user chat session) -- survives a process restart. The
+terminal UI runs as its own separate OS process, not in-process with Discord
+the way the old web dashboard did, so its connection to checkpoints.db has
+its own WAL + busy_timeout (see CHECKPOINT_DB_PATH below) rather than relying
+on SqliteSaver's same-process lock. PENDING_SENDS below is still RAM-only and
+does NOT survive a restart -- an unconfirmed send proposal is lost if the
+process restarts before it's confirmed, same as before, and stays scoped to
+whichever process (daemon+Discord, or the terminal UI) originally proposed it.
 """
 import json
 import os
@@ -898,7 +903,7 @@ def preparer_envoi_mail(destinataire: str, sujet: str, contenu: str) -> str:
     explicitly asked to send (not just reply/prepare). Sends strictly
     nothing: explicit human confirmation is required before any SMTP send,
     through whichever interface the user is on (a "Confirm send" button on
-    Discord, or the same on the web dashboard's chat page)."""
+    Discord, or the same on the terminal UI's Chat pane)."""
     pending_id = str(uuid.uuid4())[:8]
     PENDING_SENDS[pending_id] = {"destinataire": destinataire, "sujet": sujet, "contenu": contenu}
     return (f"[PROPOSAL {pending_id}] Ready to send to {destinataire}, subject \"{sujet}\". "
@@ -909,12 +914,12 @@ def execute_pending_send(pending_id: str) -> dict:
     """Executes a proposal from PENDING_SENDS (removing it either way), with
     the same daily anti-ban cap check as everywhere else a send can happen --
     falls back to a draft instead of a flat refusal once the cap is reached.
-    NOT a @tool -- this only runs after a human confirms (a Discord button
-    today, the web dashboard's confirm-send action once it exists), never
-    called by the agent itself. Returns {"status": one of "expired" |
-    "draft_failed" | "draft_saved" | "send_failed" | "sent", "title": str,
-    "description": str} -- no Discord/HTTP-specific content, so both
-    interfaces map "status" to their own visual treatment."""
+    NOT a @tool -- this only runs after a human confirms (a Discord button,
+    or the terminal UI's own confirm button), never called by the agent
+    itself. Returns {"status": one of "expired" | "draft_failed" |
+    "draft_saved" | "send_failed" | "sent", "title": str, "description": str}
+    -- no interface-specific content, so both map "status" to their own
+    visual treatment."""
     from tools import email_tools
 
     payload = PENDING_SENDS.pop(pending_id, None)
@@ -1028,11 +1033,18 @@ def _trim_history(state: dict) -> dict:
 CHECKPOINT_DB_PATH = Path(__file__).resolve().parent.parent / os.environ.get(
     "HOBOT_CHECKPOINT_DB_PATH", "checkpoints.db"
 )
-# check_same_thread=False: shared across Discord's run_in_executor threads and
-# (once the web dashboard exists) FastAPI's own request threads -- SqliteSaver
-# guards every access with its own internal lock, so one connection shared
-# across threads in the same process is safe, just not across OS processes.
+# check_same_thread=False: shared across Discord's run_in_executor threads --
+# SqliteSaver guards every access with its own internal lock, so one
+# connection shared across threads in the same process is safe, just not
+# across OS processes. The terminal UI (cli.py) imports this module fresh in
+# its own separate process, with its own separate connection to the same
+# file -- WAL + a real busy_timeout (same reasoning as core/db.py's
+# get_connection()) so a chat message from Discord and one from the terminal
+# UI landing at the same instant retry instead of one immediately raising
+# "database is locked".
 _checkpoint_conn = sqlite3.connect(str(CHECKPOINT_DB_PATH), check_same_thread=False)
+_checkpoint_conn.execute("PRAGMA journal_mode=WAL")
+_checkpoint_conn.execute("PRAGMA busy_timeout=10000")
 _checkpointer = SqliteSaver(_checkpoint_conn)
 _checkpointer.setup()  # idempotent; called explicitly here so a broken DB file fails fast at import, not on the first /ask
 _agent = create_react_agent(
@@ -1059,9 +1071,9 @@ def get_history(thread_id: str) -> list[dict]:
     """Stored conversation turns for a thread_id, oldest first, as plain
     {"role": "user"|"assistant", "content": str} dicts -- tool calls/results
     filtered out, a chat UI shows the conversation, not the agent's internal
-    tool-calling steps. Used by the web dashboard's chat page; Discord
-    doesn't need this, it already shows turns live in the channel as they
-    happen."""
+    tool-calling steps. Used by the terminal UI's Chat pane, to replay past
+    turns on mount; Discord doesn't need this, it already shows turns live in
+    the channel as they happen."""
     state = _agent.get_state({"configurable": {"thread_id": thread_id}})
     if not state:
         return []
