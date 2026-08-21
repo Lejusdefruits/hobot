@@ -196,10 +196,8 @@ class MarkAppliedButton(discord.ui.Button):
                 )
                 return
             conn.execute("UPDATE offers SET status = 'applied' WHERE id = ?", (self.offer_id,))
-            conn.execute(
-                "INSERT INTO applications (offer_id, status, sent_at) VALUES (?, 'applied', datetime('now'))",
-                (self.offer_id,),
-            )
+            row_id = common.upsert_application(conn, self.offer_id, status="applied")
+            conn.execute("UPDATE applications SET sent_at = datetime('now') WHERE id = ?", (row_id,))
             common.archive_cover_letter(conn, self.offer_id)
         if self.view is not None:
             _disable_offer_buttons(self.view, self.offer_id)
@@ -361,8 +359,76 @@ class OffreView(discord.ui.View):
             self.add_item(ShowLetterButton(offer_id))
 
 
+def _offer_choices(rows) -> list[app_commands.Choice[int]]:
+    """Formats offer rows (id, title, company, optional score) into Discord
+    Choice objects -- shared by the 3 autocompletes below."""
+    choices = []
+    for r in rows:
+        score = r["score"] if "score" in r.keys() else None
+        prefix = f"#{r['id']} -- {score}/100" if score is not None else f"#{r['id']}"
+        label = f"{prefix} -- {r['title'] or '?'} -- {r['company'] or '?'}"
+        choices.append(app_commands.Choice(name=label[:100], value=r["id"]))
+    return choices
+
+
+def _filter_offer_rows(rows, current: str, limit: int = 25) -> list:
+    """Filters already-fetched offer rows against the typed text, in Python
+    rather than SQL -- reuses common.normalize_text so an accented title
+    ("Ingenieur" vs "INGÉNIEUR") still matches regardless of case/accents,
+    the same normalization already trusted elsewhere for offer dedup. An
+    exact numeric match on the id is sorted first, or typing "1" would bury
+    offer #1 under every id that merely CONTAINS a 1 (#421, #419...)."""
+    current = current.strip()
+    if not current:
+        return rows[:limit]
+    needle = common.normalize_text(current)
+    matches = [
+        r for r in rows
+        if needle in common.normalize_text(f"{r['id']} {r['title'] or ''} {r['company'] or ''}")
+    ]
+    if current.isdigit():
+        exact_id = int(current)
+        matches.sort(key=lambda r: 0 if r["id"] == exact_id else 1)
+    return matches[:limit]
+
+
+async def _offer_id_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[int]]:
+    """Suggests "id -- score -- title -- company" while typing -- for
+    /applied, limited to postings not already applied to/excluded/expired
+    (same candidates as /offers). Loads every candidate row (no LIMIT, see
+    _filter_offer_rows) then filters/caps in Python, or a posting outside
+    some arbitrary pre-loaded batch would never come up no matter what's typed."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, title, company, score FROM offers WHERE status NOT IN ('applied', 'excluded', 'expired') "
+            "ORDER BY score DESC"
+        ).fetchall()
+    return _offer_choices(_filter_offer_rows(rows, current))
+
+
+async def _any_offer_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[int]]:
+    """Same as _offer_id_autocomplete but with no status filter -- for /offer
+    and /exclude, where looking up detail or lifting an exclusion on an
+    already-applied/excluded posting is still useful."""
+    with get_connection() as conn:
+        rows = conn.execute("SELECT id, title, company, score FROM offers ORDER BY id DESC").fetchall()
+    return _offer_choices(_filter_offer_rows(rows, current))
+
+
+async def _dossier_offer_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[int]]:
+    """Only postings that already have a CV + letter generated -- for /files."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT o.id, o.title, o.company, o.score FROM offers o
+               JOIN applications a ON a.offer_id = o.id
+               WHERE a.cover_letter_path IS NOT NULL ORDER BY o.id DESC"""
+        ).fetchall()
+    return _offer_choices(_filter_offer_rows(rows, current))
+
+
 @tree.command(name="offer", description="Full detail on one posting (description, score, status, contacts)")
 @app_commands.describe(offer_id="Posting number, shown with # in /offers")
+@app_commands.autocomplete(offer_id=_any_offer_autocomplete)
 async def offer_cmd(interaction: discord.Interaction, offer_id: int):
     with get_connection() as conn:
         row = conn.execute(
@@ -405,6 +471,7 @@ async def offer_cmd(interaction: discord.Interaction, offer_id: int):
 
 @tree.command(name="files", description="Sends the already-generated CV + letter for a posting")
 @app_commands.describe(offer_id="Posting number, shown with # in /offers")
+@app_commands.autocomplete(offer_id=_dossier_offer_autocomplete)
 async def files_cmd(interaction: discord.Interaction, offer_id: int):
     await _send_offer_files(interaction, offer_id)
 
@@ -711,6 +778,7 @@ async def drafts_cmd(interaction: discord.Interaction):
 
 @tree.command(name="applied", description="Marks a posting as already applied to (drops it from /offers)")
 @app_commands.describe(offer_id="Posting number, shown with # in /offers")
+@app_commands.autocomplete(offer_id=_offer_id_autocomplete)
 async def applied(interaction: discord.Interaction, offer_id: int):
     with get_connection() as conn:
         row = conn.execute("SELECT title, company, status FROM offers WHERE id = ?", (offer_id,)).fetchone()
@@ -726,10 +794,8 @@ async def applied(interaction: discord.Interaction, offer_id: int):
             await interaction.response.send_message(embed=embed)
             return
         conn.execute("UPDATE offers SET status = 'applied' WHERE id = ?", (offer_id,))
-        conn.execute(
-            "INSERT INTO applications (offer_id, status, sent_at) VALUES (?, 'applied', datetime('now'))",
-            (offer_id,),
-        )
+        row_id = common.upsert_application(conn, offer_id, status="applied")
+        conn.execute("UPDATE applications SET sent_at = datetime('now') WHERE id = ?", (row_id,))
         common.archive_cover_letter(conn, offer_id)
     embed = base_embed(
         "Application recorded", color=COLOR_ACTIVE,
@@ -740,6 +806,7 @@ async def applied(interaction: discord.Interaction, offer_id: int):
 
 @tree.command(name="exclude", description="Manually excludes a posting (no longer appears in /offers, /status, searches)")
 @app_commands.describe(offer_id="Posting number", reason="Optional note, just for the confirmation message (not stored)")
+@app_commands.autocomplete(offer_id=_any_offer_autocomplete)
 async def exclude(interaction: discord.Interaction, offer_id: int, reason: str = ""):
     with get_connection() as conn:
         row = conn.execute("SELECT title, company, status FROM offers WHERE id = ?", (offer_id,)).fetchone()
@@ -787,6 +854,69 @@ async def resume(interaction: discord.Interaction):
         description="Scheduled checks are back to normal.",
     )
     await interaction.response.send_message(embed=embed)
+
+
+def _wipe_database() -> None:
+    """Deletes every row, children before the offers/applications they
+    reference (company_contacts.offer_id etc. are declared REFERENCES, and
+    PRAGMA foreign_keys = ON in get_connection() means deleting a parent
+    first is rejected) -- then resets the autoincrement counters, so a fresh
+    posting starts back at #1 instead of continuing from wherever it left
+    off. Row-by-row DELETE rather than dropping/recreating tables so the
+    daemon's already-open connections keep working with no restart needed."""
+    with get_connection() as conn:
+        for table in ("company_contacts", "applications", "emails", "offers",
+                      "run_log", "api_calls", "notifications", "memory_summaries", "user_profile"):
+            conn.execute(f"DELETE FROM {table}")
+        conn.execute("DELETE FROM sqlite_sequence")
+
+
+def _wipe_files() -> None:
+    """Clears outputs/ (generated CVs + letters) and profile_source/ (the
+    uploaded CV) -- everything /reset's database wipe leaves no working
+    pointer to anyway, so leaving the files behind would just be orphaned
+    disk usage no command can reach again."""
+    import shutil
+
+    from core.profile import PROFILE_DIR
+    from tools.documents import OUTPUT_DIR
+
+    for base in (OUTPUT_DIR, PROFILE_DIR):
+        if not base.exists():
+            continue
+        for child in base.iterdir():
+            shutil.rmtree(child) if child.is_dir() else child.unlink()
+
+
+class ConfirmResetView(discord.ui.View):
+    """Same danger-button-requires-a-click pattern as ConfirmSendView above --
+    /reset is the most destructive command in the bot, it doesn't get to run
+    off a single slash command with no second step."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="Confirm reset", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        _wipe_database()
+        _wipe_files()
+        embed = base_embed(
+            "Reset complete", color=COLOR_ACTIVE,
+            description="Every posting, application, contact, notification, and the uploaded CV are gone. "
+                        "Run `/profile` again to set one up.",
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@tree.command(name="reset", description="Wipes everything: postings, applications, contacts, uploaded CV -- start clean")
+async def reset_cmd(interaction: discord.Interaction) -> None:
+    embed = base_embed(
+        "Reset everything?", color=COLOR_ERROR,
+        description="This deletes every posting, application, contact, notification, and the uploaded CV. "
+                    "Cannot be undone.",
+    )
+    await interaction.response.send_message(embed=embed, view=ConfirmResetView(), ephemeral=True)
 
 
 class ConfirmSendView(discord.ui.View):
