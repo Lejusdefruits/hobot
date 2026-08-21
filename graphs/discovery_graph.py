@@ -69,6 +69,27 @@ LBA_ROME_CODES = os.environ.get("LBA_ROME_CODES", "M1805")
 # fetched never shows up there as if it were still active.
 ACTIVE_DISCOVERY_SOURCES = ("jobspy", "lba", "adzuna", "francetravail", "labonneboite")
 
+# JobSpy and Adzuna only return postings within a recent window (see
+# JOBSPY_HOURS_OLD / ADZUNA_MAX_DAYS_OLD in their own connectors) -- fine once
+# there's a backlog to keep fresh, but on a near-empty database (a fresh
+# install, or right after a reset) that same narrow window mostly returns
+# nothing: there's nothing to compare a "new" posting against, so recency
+# filtering just throws away candidates instead of narrowing good ones. Below
+# this many offers total, fetch_jobspy/fetch_adzuna widen their window for
+# this run only, falling back to the normal (tighter) default once past it.
+# Self-correcting: a widened run finds more offers, raises the count past the
+# threshold, and the next run narrows back on its own -- no separate
+# "backfill mode" flag to remember to turn off.
+SPARSE_DB_THRESHOLD = int(os.environ.get("DISCOVERY_SPARSE_THRESHOLD", "30"))
+ADZUNA_SPARSE_MAX_DAYS_OLD = int(os.environ.get("ADZUNA_SPARSE_MAX_DAYS_OLD", "14"))
+JOBSPY_SPARSE_HOURS_OLD = int(os.environ.get("JOBSPY_SPARSE_HOURS_OLD", str(14 * 24)))
+
+
+def _is_db_sparse() -> bool:
+    with get_connection() as conn:
+        n = conn.execute("SELECT COUNT(*) c FROM offers").fetchone()["c"]
+    return n < SPARSE_DB_THRESHOLD
+
 
 def _resolve_target_locations(profile: dict) -> list[dict]:
     """Resolves user_profile.target_locations against the city registry
@@ -128,13 +149,16 @@ def fetch_jobspy_node(state: DiscoveryState) -> dict:
         for loc in (profile["target_locations"] or [country])
     ]
 
-    _log(f"[fetch] JobSpy ({search_terms} @ {', '.join(locations)})...")
+    sparse = _is_db_sparse()
+    hours_old = JOBSPY_SPARSE_HOURS_OLD if sparse else None
+    _log(f"[fetch] JobSpy ({search_terms} @ {', '.join(locations)}"
+         f"{', widened window: sparse db' if sparse else ''})...")
     query = " | ".join(search_terms)
     try:
         offers = []
         for search_term in search_terms:
             for location in locations:
-                offers += sources_jobspy.search_offers(search_term=search_term, location=location)
+                offers += sources_jobspy.search_offers(search_term=search_term, location=location, hours_old=hours_old)
         _log(f"[fetch] JobSpy -> {len(offers)} results")
         return {"raw_offers": offers, "stats": [{"source": "jobspy", "n_found": len(offers), "error": None, "query": query}]}
     except Exception as e:
@@ -177,7 +201,9 @@ def fetch_adzuna_node(state: DiscoveryState) -> dict:
     profile = get_user_profile() or {"target_roles": [], "target_locations": []}
     queries = _search_terms(profile)
     joined_query = " | ".join(queries)
-    _log(f"[fetch] Adzuna ({queries})...")
+    sparse = _is_db_sparse()
+    max_days_old = ADZUNA_SPARSE_MAX_DAYS_OLD if sparse else None
+    _log(f"[fetch] Adzuna ({queries}{', widened window: sparse db' if sparse else ''})...")
     try:
         offers = []
         for query in queries:
@@ -188,7 +214,9 @@ def fetch_adzuna_node(state: DiscoveryState) -> dict:
                 # suggests there's more (a half-empty page means end of
                 # results, not worth spending another quota call on).
                 for page in range(1, ADZUNA_PAGES_PER_LOCATION + 1):
-                    page_offers = sources_adzuna.search_offers(what=query, where=loc["label"], results_per_page=15, page=page)
+                    page_offers = sources_adzuna.search_offers(
+                        what=query, where=loc["label"], results_per_page=15, page=page, max_days_old=max_days_old,
+                    )
                     offers += page_offers
                     if len(page_offers) < 15:
                         break
