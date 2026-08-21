@@ -64,6 +64,11 @@ DEFAULT_TARGET_LOCATIONS = [locations.DEFAULT_LOCATION]
 # development (M1805); change it in .env for a different target role.
 LBA_ROME_CODES = os.environ.get("LBA_ROME_CODES", "M1805")
 
+# Sources currently wired into the scheduled graph -- source of truth for
+# /sources (discord_bot.py), which filters on this so a source no longer
+# fetched never shows up there as if it were still active.
+ACTIVE_DISCOVERY_SOURCES = ("jobspy", "lba", "adzuna", "francetravail", "labonneboite")
+
 
 def _resolve_target_locations(profile: dict) -> list[dict]:
     """Resolves user_profile.target_locations against the city registry
@@ -124,16 +129,17 @@ def fetch_jobspy_node(state: DiscoveryState) -> dict:
     ]
 
     _log(f"[fetch] JobSpy ({search_terms} @ {', '.join(locations)})...")
+    query = " | ".join(search_terms)
     try:
         offers = []
         for search_term in search_terms:
             for location in locations:
                 offers += sources_jobspy.search_offers(search_term=search_term, location=location)
         _log(f"[fetch] JobSpy -> {len(offers)} results")
-        return {"raw_offers": offers, "stats": [{"source": "jobspy", "n_found": len(offers), "error": None}]}
+        return {"raw_offers": offers, "stats": [{"source": "jobspy", "n_found": len(offers), "error": None, "query": query}]}
     except Exception as e:
         _log(f"[fetch] JobSpy -> failed: {e}")
-        return {"raw_offers": [], "stats": [{"source": "jobspy", "n_found": 0, "error": str(e)}]}
+        return {"raw_offers": [], "stats": [{"source": "jobspy", "n_found": 0, "error": str(e), "query": query}]}
 
 
 def fetch_lba_node(state: DiscoveryState) -> dict:
@@ -170,6 +176,7 @@ def fetch_adzuna_node(state: DiscoveryState) -> dict:
         return {"raw_offers": [], "stats": []}
     profile = get_user_profile() or {"target_roles": [], "target_locations": []}
     queries = _search_terms(profile)
+    joined_query = " | ".join(queries)
     _log(f"[fetch] Adzuna ({queries})...")
     try:
         offers = []
@@ -186,10 +193,10 @@ def fetch_adzuna_node(state: DiscoveryState) -> dict:
                     if len(page_offers) < 15:
                         break
         _log(f"[fetch] Adzuna -> {len(offers)} results")
-        return {"raw_offers": offers, "stats": [{"source": "adzuna", "n_found": len(offers), "error": None}]}
+        return {"raw_offers": offers, "stats": [{"source": "adzuna", "n_found": len(offers), "error": None, "query": joined_query}]}
     except Exception as e:
         _log(f"[fetch] Adzuna -> failed: {e}")
-        return {"raw_offers": [], "stats": [{"source": "adzuna", "n_found": 0, "error": str(e)}]}
+        return {"raw_offers": [], "stats": [{"source": "adzuna", "n_found": 0, "error": str(e), "query": joined_query}]}
 
 
 def fetch_francetravail_node(state: DiscoveryState) -> dict:
@@ -202,6 +209,7 @@ def fetch_francetravail_node(state: DiscoveryState) -> dict:
         return {"raw_offers": [], "stats": []}
     profile = get_user_profile() or {"target_roles": [], "target_locations": []}
     queries = _search_terms(profile)
+    joined_query = " | ".join(queries)
     _log(f"[fetch] France Travail ({queries})...")
     try:
         offers = []
@@ -209,10 +217,10 @@ def fetch_francetravail_node(state: DiscoveryState) -> dict:
             for loc in _resolve_target_locations(profile):
                 offers += sources_francetravail.search_offers(mots_cles=query, ville=loc["label"])
         _log(f"[fetch] France Travail -> {len(offers)} results")
-        return {"raw_offers": offers, "stats": [{"source": "francetravail", "n_found": len(offers), "error": None}]}
+        return {"raw_offers": offers, "stats": [{"source": "francetravail", "n_found": len(offers), "error": None, "query": joined_query}]}
     except Exception as e:
         _log(f"[fetch] France Travail -> failed: {e}")
-        return {"raw_offers": [], "stats": [{"source": "francetravail", "n_found": 0, "error": str(e)}]}
+        return {"raw_offers": [], "stats": [{"source": "francetravail", "n_found": 0, "error": str(e), "query": joined_query}]}
 
 
 def fetch_labonneboite_node(state: DiscoveryState) -> dict:
@@ -619,10 +627,10 @@ def log_run_node(state: DiscoveryState) -> dict:
             if backoff_until:
                 _log(f"[circuit-breaker] {stat['source']} failing -> backed off until {backoff_until}")
             conn.execute(
-                """INSERT INTO run_log (run_type, source, finished_at, n_found, n_new, errors, backoff_until)
-                   VALUES ('discovery', ?, datetime('now'), ?, ?, ?, ?)""",
+                """INSERT INTO run_log (run_type, source, finished_at, n_found, n_new, errors, backoff_until, query)
+                   VALUES ('discovery', ?, datetime('now'), ?, ?, ?, ?, ?)""",
                 (stat["source"], stat.get("n_found", 0), n_new_by_source.get(stat["source"], 0),
-                 error, backoff_until),
+                 error, backoff_until, stat.get("query")),
             )
 
     scored = state.get("scored_offers") or []
@@ -631,10 +639,12 @@ def log_run_node(state: DiscoveryState) -> dict:
         n_new = len(state.get("new_offers") or [])
         title = f"hobot -- {n_new} new offer(s), {len(scored)} scored"
         lines = []
+        notified_ids: list[int] = []  # offers mentioned in THIS notification, see notify_all(offer_ids=...)
         embed = base_embed(f"{n_new} new offer(s) found", color=COLOR_ACTIVE)
         if letters:
             lines.append(f"{len(letters)} cover letter(s) drafted automatically (score >= {LETTER_SCORE_THRESHOLD}):")
             lines += [f"[{o['score']}] {o['title']} -- {o['company']}" for o in letters]
+            notified_ids += [o["id"] for o in letters if o.get("id") is not None]
             embed.add_field(
                 name=f"Letters drafted automatically (score >= {LETTER_SCORE_THRESHOLD})",
                 value="\n".join(f"**{o['score']}** -- {o['title']} -- {o['company']}" for o in letters)[:1024],
@@ -645,6 +655,7 @@ def log_run_node(state: DiscoveryState) -> dict:
             if highlights:
                 lines.append("Best offers this run:")
                 lines += [f"[{o['score']}] {o['title']} -- {o['company']}" for o in highlights[:5]]
+                notified_ids += [o["id"] for o in highlights[:5] if o.get("id") is not None]
                 embed.add_field(
                     name="Best offers this run",
                     value="\n".join(f"**{o['score']}** -- {o['title']} -- {o['company']}" for o in highlights[:5])[:1024],
@@ -653,6 +664,8 @@ def log_run_node(state: DiscoveryState) -> dict:
             elif not letters:
                 best = max(scored, key=lambda o: o.get("score") or 0)
                 lines.append(f"Best score this run: {best.get('score')} -- {best['title']} ({best['company']})")
+                if best.get("id") is not None:
+                    notified_ids.append(best["id"])
                 embed.add_field(
                     name="Best score this run",
                     value=f"**{best.get('score')}** -- {best['title']} ({best['company']})",
@@ -672,7 +685,7 @@ def log_run_node(state: DiscoveryState) -> dict:
             filter_line = "Dropped this run: " + ", ".join(filter_bits)
             lines.append(filter_line)
             embed.add_field(name="Dropped this run", value=", ".join(filter_bits), inline=False)
-        notify_all(title, "\n".join(lines), embed=embed)
+        notify_all(title, "\n".join(lines), embed=embed, kind="offers", offer_ids=notified_ids or None)
     return {}
 
 

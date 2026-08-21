@@ -66,6 +66,7 @@ def _run_discovery() -> None:
             "hobot -- error", "Offer discovery failed, check the daemon logs.",
             embed=base_embed("Error -- offer discovery", color=COLOR_ERROR,
                               description="Check the daemon logs for details."),
+            kind="error",
         )
         return
 
@@ -84,6 +85,7 @@ def _run_discovery() -> None:
                     f"{len(expired)} offer(s) removed (dead link)", color=COLOR_DEFAULT,
                     description="\n".join(f"**#{o['id']}** {o['title']} -- {o['company']}" for o in expired)[:2048],
                 ),
+                kind="cleanup", offer_ids=[o["id"] for o in expired],
             )
     except Exception:
         log.error("link check failed:\n%s", traceback.format_exc())
@@ -103,6 +105,7 @@ def _run_email_watch() -> None:
             "hobot -- error", "Email watching failed, check the daemon logs.",
             embed=base_embed("Error -- email watch", color=COLOR_ERROR,
                               description="Check the daemon logs for details."),
+            kind="error",
         )
 
 
@@ -199,13 +202,14 @@ def _run_weekly_digest() -> None:
                 value="\n".join(f"**#{r['id']}** {r['title']} -- {r['company']}" for r in stale_drafts)[:1024],
                 inline=False,
             )
-        notify_all("hobot -- weekly digest", "\n".join(lines), embed=embed)
+        notify_all("hobot -- weekly digest", "\n".join(lines), embed=embed, kind="digest")
     except Exception:
         log.error("weekly digest failed:\n%s", traceback.format_exc())
         notify_all(
             "hobot -- error", "The weekly digest failed, check the daemon logs.",
             embed=base_embed("Error -- weekly digest", color=COLOR_ERROR,
                               description="Check the daemon logs for details."),
+            kind="error",
         )
 
 
@@ -280,6 +284,7 @@ def start() -> None:
     )
     scheduler.start()
     daemon_state.scheduler = scheduler  # published for /status and the agent's statut_veille tool
+    daemon_state.run_weekly_digest_fn = _run_weekly_digest  # published for /digest
     log.info(
         "Scheduler started: discovery on weekdays at %sh (+/-%dmin), weekends at %sh, weekly digest %s %dh",
         DISCOVERY_HOURS_WEEKDAY, DISCOVERY_JITTER_MIN, DISCOVERY_HOURS_WEEKEND, WEEKLY_DIGEST_DAY, WEEKLY_DIGEST_HOUR,

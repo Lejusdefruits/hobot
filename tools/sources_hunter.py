@@ -12,6 +12,8 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+from core.api_usage import log_call
+
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 API_KEY = os.environ.get("HUNTER_API_KEY", "")
@@ -34,6 +36,7 @@ def domain_search(domain: str, limit: int = 10) -> list[dict]:
             params={"domain": domain, "api_key": API_KEY, "limit": limit},
             timeout=TIMEOUT,
         )
+        log_call("hunter")
         resp.raise_for_status()
         emails = resp.json().get("data", {}).get("emails", [])
         return [

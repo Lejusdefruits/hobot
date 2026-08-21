@@ -105,6 +105,94 @@ def chercher_offres_maintenant(mot_cle: str, ville: str = "France") -> str:
 
 
 @tool
+def strategie_recherche() -> str:
+    """Shows the search keyword currently in use for each discovery source
+    that takes a free-text query (Adzuna, JobSpy/Indeed, France Travail --
+    LBA and La Bonne Boite search by a fixed ROME code instead, see
+    LBA_ROME_CODES in graphs/discovery_graph.py), with the result count from
+    its last run. There's no per-run keyword adaptation here: the keyword is
+    derived straight from user_profile.target_roles (see discovery_graph.py's
+    _search_terms) and stays constant until the profile changes -- this
+    reports what's actually being searched, not a reasoning trail."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT r.source, r.query, r.n_found, r.finished_at
+               FROM run_log r
+               JOIN (SELECT source, MAX(id) AS max_id FROM run_log
+                     WHERE query IS NOT NULL GROUP BY source) m
+                 ON r.source = m.source AND r.id = m.max_id
+               ORDER BY r.source"""
+        ).fetchall()
+    if not rows:
+        return "No keyword recorded yet (no discovery run with a free-text query has completed)."
+    return "\n".join(
+        f"{common.source_label(r['source'])} -- \"{r['query']}\" "
+        f"({r['n_found']} result(s) last run, {r['finished_at']})"
+        for r in rows
+    )
+
+
+@tool
+def journal_recherches(limite: int = 15) -> str:
+    """History of recent scheduled discovery runs, every source together
+    (query used where known, result counts, errors) -- unlike
+    strategie_recherche, which only shows the LATEST run per source, this
+    shows several runs in a row to judge a trend (e.g. "0 results for three
+    runs straight"). Useful for a question like 'what have you searched for
+    recently and what did it turn up'."""
+    limite = max(1, min(limite, 40))
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT source, query, n_found, n_new, errors, finished_at
+               FROM run_log WHERE run_type = 'discovery' ORDER BY id DESC LIMIT ?""",
+            (limite,),
+        ).fetchall()
+    if not rows:
+        return "No discovery run recorded yet."
+    lines = []
+    for r in reversed(rows):  # oldest to newest, more natural to read
+        line = f"{r['finished_at'] or '?'} -- {common.source_label(r['source'])}"
+        if r["query"]:
+            line += f" -- \"{r['query']}\""
+        line += (f" -- {r['n_found'] if r['n_found'] is not None else '?'} result(s), "
+                 f"{r['n_new'] if r['n_new'] is not None else '?'} new")
+        if r["errors"]:
+            line += f"\n  error: {r['errors'][:200]}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+@tool
+def dernieres_notifications(limite: int = 5) -> str:
+    """Shows the most recent proactive notifications actually sent to Discord
+    (new postings found, important mail, weekly digest, errors) -- what the
+    user has in front of them in the Discord channel but that YOU don't
+    otherwise see, since these are posted straight to the channel, outside
+    your per-thread conversation memory. CALL THIS TOOL FIRST as soon as the
+    user refers to something seen in a notification without giving a precise
+    id (e.g. "that posting", "the one you just found", "that earlier email",
+    "and that alert?") -- never guess which posting/email they mean, check
+    here first. Each entry lists, when known, the posting ids involved
+    (usable afterward with details_offre)."""
+    limite = max(1, min(limite, 20))
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT kind, title, message, offer_ids, created_at FROM notifications ORDER BY id DESC LIMIT ?",
+            (limite,),
+        ).fetchall()
+    if not rows:
+        return "No notification sent yet."
+    lines = []
+    for r in reversed(rows):  # oldest to newest, more natural to read
+        offer_ids = json.loads(r["offer_ids"]) if r["offer_ids"] else []
+        line = f"[{r['created_at']}] ({r['kind']}) {r['title']}\n{r['message'][:600]}"
+        if offer_ids:
+            line += f"\nRelated posting(s): {', '.join('#' + str(i) for i in offer_ids)}"
+        lines.append(line)
+    return "\n\n".join(lines)
+
+
+@tool
 def mes_candidatures() -> str:
     """Lists applications already sent or marked (offers applied to), most
     recent first."""
@@ -275,6 +363,21 @@ def rechercher_entreprise(nom_entreprise: str, contexte: str = "") -> str:
     letter if the sector/city clearly match the posting, otherwise ignore it."""
     from tools import web_search
     return web_search.search_company(nom_entreprise, hint=contexte) or "No information found."
+
+
+@tool
+def quotas_api_restants() -> str:
+    """Shows this month's usage for the 3 APIs with a limited free quota
+    (Adzuna: 2500 searches/month, Hunter.io and Snov.io: 50 credits/month
+    each, 1 credit per domain search) -- check this before running a lot of
+    one-off searches or company contact lookups in a row, to avoid finding
+    out the quota's exhausted after the fact."""
+    from core.api_usage import quota_summary
+    lines = []
+    for q in quota_summary():
+        label = {"adzuna": "Adzuna", "hunter": "Hunter.io", "snov": "Snov.io"}.get(q["source"], q["source"])
+        lines.append(f"{label}: {q['used']}/{q['limit']} used this month ({q['remaining']} remaining)")
+    return "\n".join(lines)
 
 
 _DOMAIN_SKIP = ("linkedin.com", "societe.com", "pappers.fr", "indeed.com", "google.com",
@@ -609,6 +712,42 @@ def funnel_conversion() -> str:
     return "\n".join(lines)
 
 
+AXES_PROGRESSION_PROMPT = """Here are the score reasons an evaluator gave for {n} recently
+poorly-scored job postings (score < 50) for this candidate:
+
+{raisons}
+
+Identify the 2-4 gaps or mismatches that come up MOST OFTEN in these reasons (a missing
+skill, wrong experience level, poor location match, wrong role type...). Ignore reasons
+that only show up once. Be concrete and actionable, not a vague summary.
+
+Reply with ONLY JSON: {{"analyse": "2-4 bullet points, one per line"}}"""
+
+
+@tool
+def axes_progression(limite: int = 30) -> str:
+    """Analyzes the score reasons (score_reason) of the most recent poorly-
+    scored postings (score < 50) to spot the gaps that come up most often --
+    no new search, just a synthesis of what scoring already wrote for each
+    posting. Useful for a question like 'why am I scoring poorly lately' or
+    'what should I work on'."""
+    from core.llm import chat_json
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT title, score, score_reason FROM offers WHERE score IS NOT NULL AND score < 50 "
+            "AND score_reason IS NOT NULL ORDER BY first_seen_at DESC LIMIT ?",
+            (limite,),
+        ).fetchall()
+    if len(rows) < 5:
+        return "Not enough recently poorly-scored postings for a useful analysis (minimum 5)."
+    raisons = "\n".join(f"- [{r['score']}] {r['title']} :: {r['score_reason']}" for r in rows)
+    try:
+        result = chat_json(AXES_PROGRESSION_PROMPT.format(n=len(rows), raisons=raisons))
+        return result.get("analyse") or "No usable analysis."
+    except Exception as e:
+        return f"Analysis unavailable: {e}"
+
+
 @tool
 def brouillons_en_attente() -> str:
     """Lists reply drafts already created automatically (by scheduled
@@ -770,11 +909,13 @@ def preparer_envoi_mail(destinataire: str, sujet: str, contenu: str) -> str:
 
 
 TOOLS = [
-    rechercher_offres, chercher_offres_maintenant, mes_candidatures, details_offre,
-    description_complete_offre, rechercher_entreprise, rechercher_contacts_entreprise, profil_candidat,
+    rechercher_offres, chercher_offres_maintenant, strategie_recherche, journal_recherches,
+    dernieres_notifications, mes_candidatures, details_offre,
+    description_complete_offre, rechercher_entreprise, quotas_api_restants, rechercher_contacts_entreprise,
+    profil_candidat,
     definir_profil, modifier_profil, statut_veille, sauvegarder_lettre_motivation, adapter_cv, lire_lettre_motivation,
     marquer_postule, annuler_postule, exclure_offre, inclure_offre, repartition_scores, funnel_conversion,
-    brouillons_en_attente,
+    axes_progression, brouillons_en_attente,
     envois_restants_aujourdhui, comptes_mail_suivis, lire_derniers_mails, rechercher_emails,
     creer_brouillon, lister_brouillons_mail, modifier_brouillon_mail, supprimer_brouillon_mail,
     preparer_envoi_mail,

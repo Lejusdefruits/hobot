@@ -15,6 +15,8 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+from core.api_usage import log_call
+
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 USER_ID = os.environ.get("SNOV_USER_ID", "")
@@ -60,6 +62,7 @@ def domain_search(domain: str, limit: int = 10) -> list[dict]:
             params={"access_token": token, "domain": domain, "type": "all", "limit": limit},
             timeout=TIMEOUT,
         )
+        log_call("snov")
         resp.raise_for_status()
         payload = resp.json()
         if not payload.get("success"):

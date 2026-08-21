@@ -11,3 +11,8 @@ this shared module sidesteps it entirely."""
 
 paused = False
 scheduler = None
+
+# Set by daemon.py at startup (same self-import trap as `scheduler` above, see
+# the module docstring) -- lets /digest (discord_bot.py) trigger
+# _run_weekly_digest on demand without ever doing `import daemon`.
+run_weekly_digest_fn = None

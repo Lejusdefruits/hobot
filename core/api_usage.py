@@ -1,16 +1,20 @@
-"""Monthly usage tracking for APIs with a limited free quota (Adzuna, 2500
-calls/month).
+"""Monthly usage tracking for APIs with a limited free quota (Adzuna 2500/month,
+Hunter.io and Snov.io 50/month each, 1 credit per domain search).
 
-Without this counter, scheduled discovery can burn through the free quota
-with zero warning before the API starts refusing calls. `has_quota()` lets a
-connector skip the call cleanly instead of attempting it for nothing once the
-quota's used up."""
+Without this counter, scheduled discovery or a burst of contact lookups can
+burn through a free quota with zero warning before the API starts refusing
+calls -- indistinguishable from a legitimate "nothing found" for Hunter/Snov,
+which just return an empty list either way. `has_quota()` lets a connector
+skip the call cleanly instead of attempting it for nothing once the quota's
+used up."""
 from datetime import datetime
 
 from core.db import get_connection
 
 MONTHLY_QUOTAS = {
     "adzuna": 2500,
+    "hunter": 50,
+    "snov": 50,
 }
 
 
@@ -40,3 +44,13 @@ def has_quota(source: str) -> bool:
     if limit is None:
         return True
     return calls_this_month(source) < limit
+
+
+def quota_summary() -> list[dict]:
+    """A per-source summary -- used by quotas_api_restants (chat_agent.py) and
+    /quotas (discord_bot.py)."""
+    return [
+        {"source": source, "used": calls_this_month(source), "limit": limit,
+         "remaining": max(limit - calls_this_month(source), 0)}
+        for source, limit in MONTHLY_QUOTAS.items()
+    ]

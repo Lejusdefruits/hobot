@@ -1,8 +1,8 @@
 """hobot's SQLite schema.
 
 offers, company_contacts, emails, applications, run_log, user_profile,
-memory_summaries. Every LangGraph node should read from here with a targeted
-SELECT, never dump the whole table into the LLM's context.
+memory_summaries, notifications. Every LangGraph node should read from here
+with a targeted SELECT, never dump the whole table into the LLM's context.
 """
 import json
 import os
@@ -96,7 +96,8 @@ CREATE TABLE IF NOT EXISTS run_log (
     n_found         INTEGER,
     n_new           INTEGER,
     errors          TEXT,
-    backoff_until   TEXT
+    backoff_until   TEXT,
+    query           TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_run_log_source ON run_log(source);
 
@@ -128,6 +129,23 @@ CREATE TABLE IF NOT EXISTS memory_summaries (
     summary_text    TEXT NOT NULL,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- What notify_all() (tools/notify_tools.py) actually sent, separate from
+-- run_log (which logs a run's execution, not the TEXT shown to the user).
+-- The chat agent (graphs/chat_agent.py, /ask) never sees a proactive
+-- notification any other way -- it's posted straight to the Discord channel,
+-- outside its per-thread conversation memory -- so without this, a reply to
+-- one ("that posting", "that email from earlier") had nothing to anchor to
+-- and drifted onto something else. Read by dernieres_notifications.
+CREATE TABLE IF NOT EXISTS notifications (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    message     TEXT NOT NULL,
+    offer_ids   TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
 """
 
 
@@ -209,6 +227,11 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE applications SET drafted_at = datetime('now') WHERE drafted_at IS NULL")
         if "cv_path" not in app_cols:
             conn.execute("ALTER TABLE applications ADD COLUMN cv_path TEXT")
+
+    if "run_log" in tables:
+        run_log_cols = {row["name"] for row in conn.execute("PRAGMA table_info(run_log)")}
+        if "query" not in run_log_cols:
+            conn.execute("ALTER TABLE run_log ADD COLUMN query TEXT")
     conn.commit()
 
 
