@@ -178,6 +178,14 @@ the failure modes above the smaller/older it gets; a cloud key (see "Cloud
 LLM" below) sidesteps the hardware question entirely. Check Ollama is
 actually responding before moving on:
 
+`OLLAMA_NUM_CTX` (`.env`, 20000 by default) matters more than it looks:
+left unset, Ollama picks its own context window, which is often smaller than
+what this agent's system prompt plus ~37 tool schemas already need before a
+single word of conversation -- the visible symptom is short, seemingly
+truncated (or outright empty) replies to even a simple question in Discord
+or the terminal UI's Chat pane. If that happens, check `OLLAMA_NUM_CTX`
+is actually being applied rather than raise it blindly first.
+
 ```bash
 curl http://localhost:11434/api/tags
 ```
