@@ -9,14 +9,14 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Button, Static
 
-from tui.modals import TextPromptModal
+from tui.modals import CvFilePickerModal
 
 
 class ProfilePane(Vertical):
     def compose(self) -> ComposeResult:
         yield Static(id="profile-content", classes="section")
         with Vertical(classes="button-row"):
-            yield Button("Upload CV (pdf/docx path)", id="upload-cv")
+            yield Button("Upload CV...", id="upload-cv")
             yield Button("Refresh", id="refresh")
         yield Static(id="profile-error", classes="error-text")
 
@@ -46,18 +46,12 @@ class ProfilePane(Vertical):
             self._prompt_cv_path()
 
     def _prompt_cv_path(self) -> None:
-        def handle(path: str | None) -> None:
+        def handle(path) -> None:
             if path:
                 self._upload_cv(path)
-        self.app.push_screen(
-            TextPromptModal("Path to your CV (.pdf or .docx)", placeholder="/home/you/cv.pdf"),
-            handle,
-        )
+        self.app.push_screen(CvFilePickerModal(), handle)
 
-    def _upload_cv(self, path_str: str) -> None:
-        from pathlib import Path
-
-        path = Path(path_str).expanduser()
+    def _upload_cv(self, path) -> None:
         error_widget = self.query_one("#profile-error", Static)
         if path.suffix.lower() not in (".pdf", ".docx"):
             error_widget.update("Only .pdf and .docx are supported.")

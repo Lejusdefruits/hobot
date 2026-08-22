@@ -7,7 +7,7 @@ from pathlib import Path
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Static, TextArea
+from textual.widgets import Button, DirectoryTree, Label, Static, TextArea
 
 
 class ConfirmModal(ModalScreen[bool]):
@@ -37,36 +37,45 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class TextPromptModal(ModalScreen[str | None]):
-    """dismiss(text) on submit, dismiss(None) on cancel or Escape."""
+class _CvDirectoryTree(DirectoryTree):
+    """A DirectoryTree narrowed to what CvFilePickerModal is actually for --
+    navigating into any directory, but only ever landing on a .pdf/.docx.
+    Dotfiles/dotdirs (.git, .venv, .cache...) are hidden too, since they're
+    never a real answer here and just add noise to browse through."""
+
+    def filter_paths(self, paths):
+        return [
+            p for p in paths
+            if not p.name.startswith(".") and (p.is_dir() or p.suffix.lower() in (".pdf", ".docx"))
+        ]
+
+
+class CvFilePickerModal(ModalScreen[Path | None]):
+    """Browse the filesystem and pick a CV file, instead of typing its full
+    path by hand (Tab/arrow-key/mouse navigable, same as the rest of the UI).
+    dismiss(path) on selection, dismiss(None) on Cancel or Escape."""
 
     BINDINGS = [("escape", "cancel", "Cancel")]
 
-    def __init__(self, title: str, placeholder: str = "", initial: str = ""):
+    def __init__(self, start_dir: Path | None = None):
         super().__init__()
-        self._title = title
-        self._placeholder = placeholder
-        self._initial = initial
+        self._start_dir = start_dir or Path.home()
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label(self._title, classes="modal-title")
-            yield Input(value=self._initial, placeholder=self._placeholder, id="prompt-input")
+            yield Label("Select your CV (.pdf or .docx)", classes="modal-title")
+            yield _CvDirectoryTree(str(self._start_dir), id="cv-tree")
             with Horizontal(classes="button-row"):
-                yield Button("OK", id="ok", variant="primary")
                 yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
-        self.query_one("#prompt-input", Input).focus()
+        self.query_one(_CvDirectoryTree).focus()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.dismiss(event.value.strip() or None)
+    def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
+        self.dismiss(event.path)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "ok":
-            self.dismiss(self.query_one("#prompt-input", Input).value.strip() or None)
-        else:
-            self.dismiss(None)
+        self.dismiss(None)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
