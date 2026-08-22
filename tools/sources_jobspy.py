@@ -20,6 +20,7 @@ Cadence: see DISCOVERY_HOURS_WEEKDAY/WEEKEND and JOBSPY_JITTER_MIN in .env
 (spaced out more than the official APIs -- higher ban risk than a plain API
 call).
 """
+import math
 import os
 from pathlib import Path
 
@@ -54,11 +55,23 @@ def search_offers(search_term: str = "emploi", location: str = "France",
     return [_normalize(row) for row in df.to_dict("records")]
 
 
+def _clean_amount(value) -> float | None:
+    """pandas turns a missing numeric column into float('nan'), not None --
+    and bool(nan) is True in Python, so a plain truthiness/`or` check treats
+    a missing amount as present and stringifies it as the literal "nan"."""
+    try:
+        return None if value is None or math.isnan(value) else float(value)
+    except TypeError:
+        return None
+
+
 def _normalize(row: dict) -> dict:
     salary = None
-    if row.get("min_amount") or row.get("max_amount"):
+    min_amount, max_amount = _clean_amount(row.get("min_amount")), _clean_amount(row.get("max_amount"))
+    if min_amount or max_amount:
         currency = row.get("currency") or ""
-        salary = f"{row.get('min_amount') or 0:.0f}-{row.get('max_amount') or 0:.0f}{currency}"
+        currency = "" if isinstance(currency, float) and math.isnan(currency) else currency
+        salary = f"{min_amount or 0:.0f}-{max_amount or 0:.0f}{currency}"
     site = row.get("site") or (SITES[0] if len(SITES) == 1 else "jobspy")
     return make_offer(
         source=f"jobspy_{site}",

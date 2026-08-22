@@ -26,6 +26,7 @@ Dispatches on user_profile.cv_format:
 """
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -223,10 +224,15 @@ def _pick_font(page, spans: list[dict], text: str) -> tuple[Path, float, tuple]:
         for f in page.get_fonts():
             if f[3] == ref["font"]:
                 fontbuffer = page.parent.extract_font(f[0])[-1]
-                tmp = Path(tempfile.mkdtemp()) / "embedded.ttf"
+                tmpdir = Path(tempfile.mkdtemp())
+                tmp = tmpdir / "embedded.ttf"
                 tmp.write_bytes(fontbuffer)
                 if _font_glyphs_ok(tmp, text):
+                    # kept alive on purpose: _wrap_and_insert still needs to
+                    # read this file later (phase 2) -- _tailor_pdf_text
+                    # removes tmpdir once every edit is done.
                     return tmp, size, color
+                shutil.rmtree(tmpdir, ignore_errors=True)
                 break
     except Exception:
         pass
@@ -387,6 +393,13 @@ def _tailor_pdf_text(doc: fitz.Document, profile: dict, title: str, description:
     for e in edits:
         _wrap_and_insert(page, e["bbox"], e["text"], e["fontfile"], e["fontsize"], e["color"])
 
+    # Clean up any per-edit temp dir _pick_font extracted an embedded font
+    # into (kept alive until _wrap_and_insert read it just above) -- never
+    # the bundled Montserrat fallback, which lives under FONTS_DIR.
+    for e in edits:
+        if FONTS_DIR not in e["fontfile"].parents:
+            shutil.rmtree(e["fontfile"].parent, ignore_errors=True)
+
 
 _SKILL_HEADER_WORDS = ("competence", "competences", "skill", "skills", "aptitude", "aptitudes")
 
@@ -434,16 +447,29 @@ def _find_skill_section_blocks(blocks: list[dict]) -> list[dict]:
 # docx branch
 # ---------------------------------------------------------------------------
 
+def _find_docx_summary_paragraph(doc):
+    """The longest paragraph over 80 characters -- one shared definition of
+    "the summary paragraph" for the .docx branch, used both to place the
+    {{ cv_summary }} tag (_ensure_docx_template) and to show the LLM the
+    original text to rewrite (_tailor_docx). These used to be two separate
+    heuristics (longest vs. first paragraph over 80 chars) that could each
+    pick a different paragraph on a CV where a later paragraph (e.g. an
+    experience bullet) runs longer than the actual summary -- silently
+    tailoring text that isn't the text actually shown in the output."""
+    target = max(doc.paragraphs, key=lambda p: len(p.text) if len(p.text) > 80 else 0, default=None)
+    return target if target is not None and len(target.text) > 80 else None
+
+
 def _ensure_docx_template(source_path: Path) -> Path:
     """One-time setup per uploaded .docx: find the paragraph that looks like
-    the summary (the longest short prose paragraph, same heuristic as the
-    PDF branch) and replace its text with a {{ cv_summary }} Jinja tag,
-    saved as a separate template file -- the original upload stays untouched
-    for reference, docxtpl renders fresh copies from the template from then
-    on. docxtpl (not raw python-docx) specifically because Word/Docs
-    routinely split one visually uniform sentence across several `run`
-    objects even without a formatting change; docxtpl's tag rendering
-    handles that run-splitting itself instead of this project re-solving it."""
+    the summary (see _find_docx_summary_paragraph) and replace its text with
+    a {{ cv_summary }} Jinja tag, saved as a separate template file -- the
+    original upload stays untouched for reference, docxtpl renders fresh
+    copies from the template from then on. docxtpl (not raw python-docx)
+    specifically because Word/Docs routinely split one visually uniform
+    sentence across several `run` objects even without a formatting change;
+    docxtpl's tag rendering handles that run-splitting itself instead of
+    this project re-solving it."""
     from docx import Document as _Document
 
     template_path = PROFILE_DIR / "template.docx"
@@ -451,8 +477,8 @@ def _ensure_docx_template(source_path: Path) -> Path:
         return template_path
 
     doc = _Document(str(source_path))
-    target = max(doc.paragraphs, key=lambda p: len(p.text) if len(p.text) > 80 else 0, default=None)
-    if target is None or len(target.text) <= 80:
+    target = _find_docx_summary_paragraph(doc)
+    if target is None:
         raise ValueError("no summary-like paragraph found in the .docx CV")
     for run in target.runs:
         run.text = ""
@@ -468,11 +494,8 @@ def _tailor_docx(profile: dict, title: str, description: str, offer_id: int) -> 
     template_path = _ensure_docx_template(source_path)
 
     from docx import Document as _Document
-    original_summary = ""
-    for p in _Document(str(source_path)).paragraphs:
-        if len(p.text) > 80:
-            original_summary = p.text
-            break
+    target = _find_docx_summary_paragraph(_Document(str(source_path)))
+    original_summary = target.text if target is not None else ""
 
     new_summary = _tailor_summary_text(original_summary, profile, title, description)
 
@@ -494,13 +517,23 @@ def _convert_docx_to_pdf(docx_path: Path, out_dir: Path) -> None:
     call avoids a known LibreOffice failure mode: concurrent headless
     invocations sharing the default profile can deadlock, and
     draft_letters_node can process several offers (each spawning its own
-    conversion) in a single run."""
+    conversion) in a single run.
+
+    Path.as_uri() (not an f-string) to build the file:// URI: a naive
+    f"file://{profile_dir}" breaks on Windows (backslashes never converted
+    to "/", no third slash for the drive letter), silently defeating this
+    profile-isolation mechanism there. The profile directory itself is
+    always removed afterward -- LibreOffice creates it but never cleans it
+    up, and one gets spawned per conversion (one per offer per run)."""
     profile_dir = Path(tempfile.gettempdir()) / f"hobot-soffice-{uuid.uuid4().hex}"
-    subprocess.run(
-        ["soffice", "--headless", f"-env:UserInstallation=file://{profile_dir}",
-         "--convert-to", "pdf", "--outdir", str(out_dir), str(docx_path)],
-        check=True, capture_output=True, timeout=60,
-    )
+    try:
+        subprocess.run(
+            ["soffice", "--headless", f"-env:UserInstallation={profile_dir.as_uri()}",
+             "--convert-to", "pdf", "--outdir", str(out_dir), str(docx_path)],
+            check=True, capture_output=True, timeout=60,
+        )
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

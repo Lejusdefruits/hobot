@@ -279,8 +279,8 @@ class OfferDetailScreen(ModalScreen[str | None]):
                 subprocess.Popen(["open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
                 subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+        except Exception as e:
+            self.notify(f"Couldn't open the file: {e}", severity="error")
 
     def action_close(self) -> None:
         self.dismiss("changed" if self._changed else None)

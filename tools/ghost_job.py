@@ -36,8 +36,12 @@ def check_ghost_job(description: str | None, first_seen_at: str | None) -> tuple
 
     if first_seen_at:
         try:
+            # first_seen_at is written via SQLite's own datetime('now'), which
+            # is UTC -- comparing it against datetime.now() (local time) skewed
+            # "days open" by the local UTC offset. datetime.utcnow() matches
+            # the column's own clock instead.
             first_seen = datetime.fromisoformat(first_seen_at)
-            days_open = (datetime.now() - first_seen).days
+            days_open = (datetime.utcnow() - first_seen).days
             if days_open >= DAYS_THRESHOLD:
                 reasons.append(f"open {days_open} days")
         except ValueError:

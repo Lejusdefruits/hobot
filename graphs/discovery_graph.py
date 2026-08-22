@@ -59,7 +59,7 @@ from tools import (
     sources_adzuna, sources_ats, sources_francetravail, sources_jobspy,
     sources_labonneboite, sources_lba, web_search,
 )
-from tools.common import normalize_text
+from tools.common import normalize_text, upsert_application
 from tools.discord_style import COLOR_ACTIVE, base_embed
 from tools.notify_tools import notify_all
 
@@ -643,7 +643,9 @@ def draft_letters_node(state: DiscoveryState) -> dict:
         candidates = conn.execute(
             """SELECT id, title, company, location, description, score FROM offers
                WHERE score >= ? AND status NOT IN ('applied', 'excluded', 'expired')
-               AND id NOT IN (SELECT offer_id FROM applications)
+               AND id NOT IN (
+                   SELECT offer_id FROM applications WHERE cover_letter_path IS NOT NULL
+               )
                ORDER BY score DESC LIMIT ?""",
             (LETTER_SCORE_THRESHOLD, MAX_LETTERS_PER_RUN),
         ).fetchall()
@@ -665,9 +667,12 @@ def draft_letters_node(state: DiscoveryState) -> dict:
                 lettre = result.get("lettre", "")
                 from tools.documents import generate_letter_pdf
                 path = generate_letter_pdf(offer["id"], lettre, full_name=full_name)
-                cur = conn.execute(
-                    "INSERT INTO applications (offer_id, cover_letter_path, status) VALUES (?, ?, 'draft')",
-                    (offer["id"], str(path)),
+                # upsert, not a blind INSERT: a CV may already have been
+                # tailored for this offer on its own (adapter_cv via /ask)
+                # before this run, which already created the shared
+                # applications row -- see common.upsert_application.
+                app_id = upsert_application(
+                    conn, offer["id"], defaults={"status": "draft"}, cover_letter_path=str(path),
                 )
                 # Best-effort, never blocks a letter that already succeeded --
                 # returns None (no CV uploaded via /profile yet, or the
@@ -676,7 +681,7 @@ def draft_letters_node(state: DiscoveryState) -> dict:
                 from tools.cv_tailor import tailor_cv
                 cv = tailor_cv(offer["id"], offer["title"] or "", offer["description"] or "")
                 if cv:
-                    conn.execute("UPDATE applications SET cv_path = ? WHERE id = ?", (str(cv), cur.lastrowid))
+                    conn.execute("UPDATE applications SET cv_path = ? WHERE id = ?", (str(cv), app_id))
                     _log(f"[cv] #{offer['id']} tailored -> {cv}")
                 conn.commit()
                 drafted.append(dict(offer))
@@ -735,7 +740,10 @@ def log_run_node(state: DiscoveryState) -> dict:
                 inline=False,
             )
         if scored:
-            highlights = [o for o in scored if (o.get("score") or 0) >= HIGHLIGHT_SCORE_THRESHOLD]
+            highlights = sorted(
+                (o for o in scored if (o.get("score") or 0) >= HIGHLIGHT_SCORE_THRESHOLD),
+                key=lambda o: o.get("score") or 0, reverse=True,
+            )
             if highlights:
                 lines.append("Best offers this run:")
                 lines += [f"[{o['score']}] {o['title']} -- {o['company']}" for o in highlights[:5]]

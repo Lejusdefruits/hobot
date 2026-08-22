@@ -18,7 +18,7 @@ APP_KEY = os.environ.get("ADZUNA_APP_KEY", "")
 BASE_URL = "https://api.adzuna.com/v1/api/jobs"
 # An agent running continuously only asks for recent listings (Adzuna supports
 # this filter server-side, no need to redo it ourselves).
-MAX_DAYS_OLD = int(os.environ.get("ADZUNA_MAX_DAYS_OLD", "3"))
+MAX_DAYS_OLD = int(os.environ.get("ADZUNA_MAX_DAYS_OLD", "6"))
 
 
 def search_offers(what: str = "emploi", where: str = "Paris",
