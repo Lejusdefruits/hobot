@@ -148,16 +148,20 @@ ConfirmModal > Vertical {
     padding: 1 2;
 }
 
-TextPromptModal {
+CvFilePickerModal {
     align: center middle;
 }
 
-TextPromptModal > Vertical {
-    width: 70;
-    height: auto;
+CvFilePickerModal > Vertical {
+    width: 80;
+    height: 30;
     border: round $primary;
     background: $surface;
     padding: 1 2;
+}
+
+CvFilePickerModal #cv-tree {
+    height: 1fr;
 }
 
 OfferDetailScreen {
