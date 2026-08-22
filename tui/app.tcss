@@ -106,6 +106,17 @@ TextArea {
     padding: 0 1;
 }
 
+/* Textual's own default Vertical height is 1fr, not auto -- without this
+   rule, the empty pending-sends container (tui/panes/chat.py) silently
+   claimed half the pane's height for itself (split evenly with #chat-log's
+   own 1fr), leaving the actual chat log's visible border stopping halfway
+   down the pane instead of reaching the input row -- confirmed directly by
+   measuring both widgets' regions. auto: zero height with no pending-send
+   cards mounted, grows only to fit the ones that exist. */
+#pending-sends {
+    height: auto;
+}
+
 .chat-turn {
     margin-bottom: 1;
 }
@@ -154,7 +165,12 @@ CvFilePickerModal {
 
 CvFilePickerModal > Vertical {
     width: 80;
-    height: 30;
+    /* A fixed height: 30 overflowed off-screen (buttons unreachable, not
+       just visually clipped) on anything shorter than 30 rows, a classic
+       80x24 terminal included -- confirmed directly. A share of the actual
+       screen height instead, never taller than what's really there;
+       #cv-tree's own 1fr still adapts to whatever that leaves it. */
+    height: 90%;
     border: round $primary;
     background: $surface;
     padding: 1 2;
@@ -168,17 +184,24 @@ ProfileEditModal {
     align: center middle;
 }
 
-ProfileEditModal > Vertical {
+ProfileEditModal > VerticalScroll {
     width: 70;
+    /* height: auto (content-driven, no cap) had the same off-screen-button
+       problem as CvFilePickerModal's fixed height above, just from the
+       other direction -- content taller than the terminal instead of a
+       height that didn't shrink to fit it. Capped and scrollable now (the
+       VerticalScroll in tui/modals.py's compose()), same fix in spirit as
+       OfferDetailScreen's own VerticalScroll wrapper -- scrolling is the
+       safety net for whatever terminal it still doesn't fit; the tighter
+       padding here is just to make that unnecessary on an ordinary 80x24
+       terminal in the first place. */
     height: auto;
+    max-height: 90%;
     border: round $primary;
     background: $surface;
-    padding: 1 2;
+    padding: 0 2;
 }
 
-ProfileEditModal Input {
-    margin-bottom: 1;
-}
 
 OfferDetailScreen {
     align: center middle;

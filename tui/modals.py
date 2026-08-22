@@ -95,7 +95,14 @@ class ProfileEditModal(ModalScreen[bool]):
     BINDINGS = [("escape", "cancel", "Cancel")]
 
     def compose(self) -> ComposeResult:
-        with Vertical():
+        # VerticalScroll, not Vertical: at height: auto this content (title +
+        # 4 label/input pairs + button row) is taller than a classic 80x24
+        # terminal leaves for a centered modal -- confirmed directly, Save/
+        # Cancel rendered several rows below the visible screen, unreachable
+        # by mouse and only escapable via Escape. Scrollable means the
+        # buttons are still reachable (scroll down) instead of silently
+        # clipped off-screen on a terminal this size.
+        with VerticalScroll():
             yield Label("Edit profile", classes="modal-title")
             yield Label("Full name")
             yield Input(id="profile-full-name")
