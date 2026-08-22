@@ -18,8 +18,31 @@ CLI_CHAT_THREAD_ID = os.environ.get("CLI_CHAT_THREAD_ID", "cli")
 
 
 class ChatPane(Vertical):
+    # #chat-log (VerticalScroll) never actually has focus -- the input box
+    # does, always (see focus_input below and _on_reply's refocus after
+    # every turn) -- so its own built-in scroll bindings never fire; there
+    # was no way to scroll the log at all without a working mouse wheel
+    # (which not every terminal reports). These re-implement the same
+    # bindings at the pane level so they work no matter what has focus.
+    # Up/down/pageup/pagedown only, not home/end: Input itself already binds
+    # home/end (cursor to start/end of the text box, confirmed in Textual's
+    # own source) and consumes those two before they'd ever reach here.
+    BINDINGS = [
+        ("up", "scroll_log('up')", "Scroll chat up"),
+        ("down", "scroll_log('down')", "Scroll chat down"),
+        ("pageup", "scroll_log('page_up')", "Page up"),
+        ("pagedown", "scroll_log('page_down')", "Page down"),
+    ]
+
     def focus_input(self) -> None:
         self.query_one("#chat-input", Input).focus()
+
+    def action_scroll_log(self, direction: str) -> None:
+        log = self.query_one("#chat-log", VerticalScroll)
+        {
+            "up": log.scroll_up, "down": log.scroll_down,
+            "page_up": log.scroll_page_up, "page_down": log.scroll_page_down,
+        }[direction](animate=False)
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-log")
