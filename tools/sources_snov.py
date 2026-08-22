@@ -15,7 +15,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-from core.api_usage import log_call
+from core.api_usage import has_quota, log_call
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
@@ -52,6 +52,8 @@ def domain_search(domain: str, limit: int = 10) -> list[dict]:
     exception that propagates to the caller (same philosophy as
     sources_hunter.domain_search)."""
     if not domain:
+        return []
+    if not has_quota("snov"):
         return []
     try:
         token = _get_token()

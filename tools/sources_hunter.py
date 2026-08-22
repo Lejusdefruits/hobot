@@ -12,7 +12,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-from core.api_usage import log_call
+from core.api_usage import has_quota, log_call
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
@@ -29,6 +29,8 @@ def domain_search(domain: str, limit: int = 10) -> list[dict]:
     web_search.search: a failed contact lookup should never block anything
     else)."""
     if not API_KEY or not domain:
+        return []
+    if not has_quota("hunter"):
         return []
     try:
         resp = requests.get(

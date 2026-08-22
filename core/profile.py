@@ -20,7 +20,11 @@ from pypdf import PdfReader
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-CV_PATH = Path(os.environ.get("CV_PATH", ""))
+# None (not Path("")) when unset: Path("") normalizes to Path('.'), the cwd,
+# which is always truthy and whose .exists() is always True -- that silently
+# defeated the "CV_PATH isn't set" guard below on the default, empty .env.
+_cv_path_raw = os.environ.get("CV_PATH", "").strip()
+CV_PATH = Path(_cv_path_raw) if _cv_path_raw else None
 PROFILE_DIR = Path(__file__).resolve().parent.parent / os.environ.get("HOBOT_PROFILE_DIR", "profile_source")
 
 CvFormat = Literal["pdf_text", "pdf_image", "docx"]
@@ -115,7 +119,7 @@ def detect_format(path: Path) -> CvFormat:
     return "pdf_text" if extract_text(path) else "pdf_image"
 
 
-def parse_cv(path: Path = CV_PATH, fmt: CvFormat | None = None) -> dict:
+def parse_cv(path: Path | None = CV_PATH, fmt: CvFormat | None = None) -> dict:
     """Dispatches on the CV's actual format -- a real text layer (PDF or
     .docx) goes straight to the LLM as text, a flattened/rasterized PDF
     (no text layer at all, common for a Canva-style export) falls back to

@@ -6,8 +6,9 @@
 
     mkdir -p ~/Library/LaunchAgents
     cp launchd/com.hobot.daemon.plist ~/Library/LaunchAgents/
-    # edit the copied file: replace both /path/to/hobot with the real path
-    # where you cloned the repo
+    # edit the copied file: replace every /path/to/hobot below (five places:
+    # python and daemon.py under ProgramArguments, WorkingDirectory, and the
+    # two log paths) with the real path where you cloned the repo
     launchctl load ~/Library/LaunchAgents/com.hobot.daemon.plist
 
   Managing it: `launchctl list | grep hobot` (running if listed),

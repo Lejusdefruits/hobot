@@ -76,6 +76,17 @@ def chunk_message(text: str, limit: int = DISCORD_MSG_LIMIT) -> list[str]:
     return chunks
 
 
+def _log_send_failure(future) -> None:
+    """run_coroutine_threadsafe hands back a future nothing was reading --
+    a failed send (missing permission, rate limit, network blip) vanished
+    with no trace anywhere. Logged here, not raised: notify_channel/
+    notify_channel_embed run from the scheduler's own threads, nothing there
+    is positioned to handle an exception surfacing later anyway."""
+    exc = future.exception()
+    if exc is not None:
+        print(f"[discord_bot] channel send failed: {exc}")
+
+
 def notify_channel(message: str) -> None:
     """Pushes a message to the Discord channel from any thread. The daemon's
     scheduler (daemon.py) runs on its own threads, not the bot's asyncio loop,
@@ -92,7 +103,7 @@ def notify_channel(message: str) -> None:
         for chunk in chunk_message(message):
             await channel.send(chunk)
 
-    asyncio.run_coroutine_threadsafe(_send_all(), client.loop)
+    asyncio.run_coroutine_threadsafe(_send_all(), client.loop).add_done_callback(_log_send_failure)
 
 
 def notify_channel_embed(embed: discord.Embed) -> None:
@@ -104,7 +115,7 @@ def notify_channel_embed(embed: discord.Embed) -> None:
     channel = client.get_channel(CHANNEL_ID)
     if channel is None:
         return
-    asyncio.run_coroutine_threadsafe(channel.send(embed=embed), client.loop)
+    asyncio.run_coroutine_threadsafe(channel.send(embed=embed), client.loop).add_done_callback(_log_send_failure)
 
 
 @client.event

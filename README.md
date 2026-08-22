@@ -149,10 +149,13 @@ want to see (or change) what each one actually does.
 ### Requirements
 
 Python 3.10 or newer (built and tested on 3.12), `git`, and either something
-to run an Ollama model on (a 7-8B model with tool-calling support runs fine on
-a consumer GPU, or CPU-only if you're fine with slower replies) or a cloud LLM
-key (see "Cloud LLM" below) if you'd rather skip running a model yourself. See
-[Platforms](#platforms) for what else differs by OS.
+to run an Ollama model on or a cloud LLM key (see "Cloud LLM" below) if you'd
+rather skip running a model yourself. qwen3.8, the recommended default below,
+is a 27B model (an 18GB download at its default Q4 quantization) -- a GPU
+with at least 18-20GB VRAM makes for a solid experience, and it's usable but
+slow CPU-only if you have the RAM and patience for that; a lighter
+tool-calling model (see the note below) is the better fit for more modest
+hardware. See [Platforms](#platforms) for what else differs by OS.
 
 ### 1. Ollama
 
@@ -163,15 +166,17 @@ ollama pull qwen3.8
 ```
 
 **qwen3.8 is the recommended default here**, not just a placeholder example:
-it's a recent release and, in practice, one of the few local models in this
-size class that reliably drives multi-step tool-calling without losing track
-of what it's doing (repeating a tool call, forgetting to conclude, or
-returning malformed arguments). That's the actual bottleneck for something
-like this bot, which has to chain database lookups, letter drafting, and
-mail tools correctly turn after turn. Other tool-calling models (qwen2.5,
-llama3.1, mistral-nemo) will run, but expect more of the failure modes above
-the smaller/older they get. Check Ollama is actually responding before
-moving on:
+it's a recent release and, in practice, one of the few local models that
+reliably drives multi-step tool-calling without losing track of what it's
+doing (repeating a tool call, forgetting to conclude, or returning malformed
+arguments). That's the actual bottleneck for something like this bot, which
+has to chain database lookups, letter drafting, and mail tools correctly turn
+after turn -- worth the heavier hardware it needs (see "Requirements" above)
+if you can run it. If you can't, a smaller tool-calling model (qwen2.5,
+llama3.1, mistral-nemo) will run on much lighter hardware, but expect more of
+the failure modes above the smaller/older it gets; a cloud key (see "Cloud
+LLM" below) sidesteps the hardware question entirely. Check Ollama is
+actually responding before moving on:
 
 ```bash
 curl http://localhost:11434/api/tags
@@ -497,8 +502,10 @@ and drafts replies, never a send without your explicit go-ahead.
    send mail (only one, even if several are watched for reading), set it to
    one of the addresses already declared.
 
-`EMAIL_POLL_INTERVAL_MIN` controls how often it checks during the day (20
-minutes by default), `EMAIL_INTERVAL_OFFPEAK_MIN` at night.
+`EMAIL_POLL_INTERVAL_MIN` controls how often it checks, day and night alike
+(20 minutes by default, plus `EMAIL_POLL_JITTER_MIN` of random jitter so it
+doesn't land on the exact same minute every time) -- there's no separate
+off-peak interval.
 
 ## Web search and company contacts (optional)
 
@@ -630,8 +637,9 @@ down the rest of the machine.
 ```bash
 mkdir -p ~/Library/LaunchAgents
 cp launchd/com.hobot.daemon.plist ~/Library/LaunchAgents/
-# edit the copied file: replace both occurrences of /path/to/hobot with the
-# real path where you cloned the repo
+# edit the copied file: replace every /path/to/hobot (five places: python and
+# daemon.py under ProgramArguments, WorkingDirectory, and the two log paths)
+# with the real path where you cloned the repo
 launchctl load ~/Library/LaunchAgents/com.hobot.daemon.plist
 ```
 
@@ -678,18 +686,33 @@ Once the bot is online and the profile is set (step 5 above):
 
 ## Commands
 
-Eight dedicated slash commands, plus `/ask`, which opens up a much wider
-set of tools in plain language:
+22 slash commands in total -- `/ask` is the last one below, and opens up a
+much wider set of tools in plain language on top of the other 21. Roughly the
+Discord equivalent of the terminal UI's tabs (see below): most of these
+mirror something a Reports/Status/Drafts pane shows at a glance there:
 
 | Command | What it does |
 |---|---|
 | `/status` | Summary of the last discovery/mail run and when the next one is due |
 | `/offers` | Best active postings, with an "already applied" button on each |
 | `/offer <id>` | Full detail on one posting: description, score, status, last seen live |
-| `/funnel` | Conversion funnel: found → scored → letter → sent → reply → interview |
+| `/files <id>` | Sends the already-generated CV + cover letter for a posting |
 | `/applied <id>` | Marks a posting applied (drops it from `/offers`) |
+| `/exclude <id>` | Manually excludes a posting (no longer appears in `/offers`, `/status`, searches) |
+| `/funnel` | Conversion funnel: found → scored → letter → sent → reply → interview |
+| `/breakdown` | Postings per score tier, and how many are still waiting to be scored |
+| `/applications` | Lists applications already sent or marked |
+| `/sources` | Status of each discovery source (last attempt, errors, backing off or not) |
+| `/strategy` | Search keyword currently in use for each discovery source |
+| `/log` | Recent history of discovery runs (keywords searched, results found) |
+| `/notifications` | History of notifications sent (postings, mail, digest, cleanup) |
+| `/quotas` | This month's usage for quota-limited APIs (Adzuna, Hunter.io, Snov.io) |
+| `/drafts` | Pending reply drafts on the sending account (Gmail) |
+| `/gaps` | AI analysis of the gaps that show up most often in poorly-scored postings |
+| `/digest` | Triggers the weekly digest right now (summary of the week) |
 | `/profile <file>` | Sets your profile from an attached CV (PDF or `.docx`) |
 | `/pause` / `/resume` | Stops or restarts scheduled checks (postings + mail) |
+| `/reset` | Wipes everything (postings, applications, contacts, uploaded CV) -- asks for confirmation, start clean |
 | `/ask "<text>"` | Everything else, see below |
 
 `/ask` is backed by an agent that can, among other things: look up a

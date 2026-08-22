@@ -736,12 +736,17 @@ def annuler_postule(offer_id: int) -> str:
     Doesn't touch the letter's content, only the 'applied' status and its
     location."""
     with get_connection() as conn:
-        row = conn.execute("SELECT title, company, status FROM offers WHERE id = ?", (offer_id,)).fetchone()
+        row = conn.execute("SELECT title, company, status, score FROM offers WHERE id = ?", (offer_id,)).fetchone()
         if not row:
             return f"No offer #{offer_id}."
         if row["status"] != "applied":
             return f"#{offer_id} isn't marked applied (current status: {row['status']})."
-        conn.execute("UPDATE offers SET status = 'scored' WHERE id = ?", (offer_id,))
+        # Same rule as inclure_offre: only 'scored' if it actually has a
+        # score, otherwise 'new' so it gets picked up by the next scoring
+        # run instead of being mislabeled 'scored' with score still NULL
+        # (possible if it was marked applied before ever being scored).
+        new_status = "scored" if row["score"] is not None else "new"
+        conn.execute("UPDATE offers SET status = ? WHERE id = ?", (new_status, offer_id))
         # Reverts the row to draft rather than deleting it -- since marquer_postule
         # now updates the SAME row a letter/CV was saved to (see
         # common.upsert_application), deleting it here would orphan those file
@@ -985,7 +990,10 @@ def lister_brouillons_mail() -> str:
     supprimer_brouillon_mail to find the right uid to target -- without it,
     those two tools have nothing to aim at."""
     from tools import email_tools
-    drafts = email_tools.lister_brouillons()
+    try:
+        drafts = email_tools.lister_brouillons()
+    except Exception as e:
+        return f"Error listing drafts: {e}"
     if not drafts:
         return "No pending drafts."
     return "\n".join(

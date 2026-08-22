@@ -221,6 +221,23 @@ def get_user_profile() -> dict | None:
     }
 
 
+def _add_column(conn: sqlite3.Connection, table: str, ddl: str) -> None:
+    """ALTER TABLE ADD COLUMN, tolerant of a duplicate-column error: daemon.py
+    and cli.py are separate processes that can both reach _add_missing_columns
+    right after a git pull adds a new column -- the check-then-write above
+    isn't itself locked, so both can see the column missing and both issue
+    the ALTER TABLE. The loser used to crash on startup with
+    'duplicate column name'; that specific error means the column is already
+    there (harmlessly, by the other process), which is exactly the end state
+    this function is trying to reach, so it's swallowed. Any other error
+    still raises."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise
+
+
 def _add_missing_columns(conn: sqlite3.Connection) -> None:
     """Must run BEFORE executescript(SCHEMA): on a database already created
     without `dedup_key`, the schema's CREATE INDEX ... ON offers(dedup_key)
@@ -231,24 +248,24 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
         return  # first-ever creation -> the schema's own CREATE TABLE is enough
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(offers)")}
     if "dedup_key" not in cols:
-        conn.execute("ALTER TABLE offers ADD COLUMN dedup_key TEXT")
+        _add_column(conn, "offers", "dedup_key TEXT")
     if "origin" not in cols:
         # DEFAULT 'veille' applies directly to existing rows -- everything in
         # the table so far came from scheduled discovery, no separate backfill needed.
-        conn.execute("ALTER TABLE offers ADD COLUMN origin TEXT NOT NULL DEFAULT 'veille'")
+        _add_column(conn, "offers", "origin TEXT NOT NULL DEFAULT 'veille'")
     if "company_domain" not in cols:
-        conn.execute("ALTER TABLE offers ADD COLUMN company_domain TEXT")
+        _add_column(conn, "offers", "company_domain TEXT")
     if "link_checked_at" not in cols:
-        conn.execute("ALTER TABLE offers ADD COLUMN link_checked_at TEXT")
+        _add_column(conn, "offers", "link_checked_at TEXT")
 
     if "user_profile" in tables:
         profile_cols = {row["name"] for row in conn.execute("PRAGMA table_info(user_profile)")}
         if "full_name" not in profile_cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN full_name TEXT")
+            _add_column(conn, "user_profile", "full_name TEXT")
         if "cv_source_path" not in profile_cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN cv_source_path TEXT")
-            conn.execute("ALTER TABLE user_profile ADD COLUMN cv_format TEXT")
-            conn.execute("ALTER TABLE user_profile ADD COLUMN cv_uploaded_at TEXT")
+            _add_column(conn, "user_profile", "cv_source_path TEXT")
+            _add_column(conn, "user_profile", "cv_format TEXT")
+            _add_column(conn, "user_profile", "cv_uploaded_at TEXT")
 
     if "applications" in tables:
         app_cols = {row["name"] for row in conn.execute("PRAGMA table_info(applications)")}
@@ -256,15 +273,15 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
             # Backfilled to now rather than left NULL, specifically so the first
             # stale-draft check after this migration doesn't flag every
             # pre-existing draft as "pending for weeks" on day one.
-            conn.execute("ALTER TABLE applications ADD COLUMN drafted_at TEXT")
+            _add_column(conn, "applications", "drafted_at TEXT")
             conn.execute("UPDATE applications SET drafted_at = datetime('now') WHERE drafted_at IS NULL")
         if "cv_path" not in app_cols:
-            conn.execute("ALTER TABLE applications ADD COLUMN cv_path TEXT")
+            _add_column(conn, "applications", "cv_path TEXT")
 
     if "run_log" in tables:
         run_log_cols = {row["name"] for row in conn.execute("PRAGMA table_info(run_log)")}
         if "query" not in run_log_cols:
-            conn.execute("ALTER TABLE run_log ADD COLUMN query TEXT")
+            _add_column(conn, "run_log", "query TEXT")
     conn.commit()
 
 
