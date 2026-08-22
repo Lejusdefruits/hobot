@@ -80,6 +80,36 @@ LBA_ROME_CODES = os.environ.get("LBA_ROME_CODES", "M1805")
 # fetched never shows up there as if it were still active.
 ACTIVE_DISCOVERY_SOURCES = ("jobspy", "lba", "adzuna", "francetravail", "labonneboite", "ats")
 
+
+def is_source_configured(source: str) -> bool:
+    """Whether this source actually has what it needs to fetch anything --
+    distinct from whether it HAS fetched anything: a source can be fully
+    configured and still show "never run" if discovery hasn't reached it
+    yet, and conversely a source with no key just silently returns nothing
+    every run (see each connector's own module docstring) without ever
+    surfacing "you forgot to set this up" on its own. /sources and the
+    terminal UI's Reports > Sources tab both show this alongside run
+    history so that distinction is visible instead of looking identical to
+    "configured but nothing found yet." labonneboite additionally needs a
+    manual France Travail approval on top of the same credentials
+    (README's French job sources section) that can't be checked from
+    config alone -- "configured" here only means the credentials are set."""
+    if source == "jobspy":
+        return True
+    if source == "lba":
+        from tools.sources_lba import LBA_API_KEY
+        return bool(LBA_API_KEY)
+    if source == "adzuna":
+        from tools.sources_adzuna import APP_ID, APP_KEY
+        return bool(APP_ID and APP_KEY)
+    if source in ("francetravail", "labonneboite"):
+        from core.france_travail_auth import CLIENT_ID, CLIENT_SECRET
+        return bool(CLIENT_ID and CLIENT_SECRET)
+    if source == "ats":
+        from core.ats_watchlist import list_companies
+        return bool(list_companies())
+    return False
+
 # JobSpy and Adzuna only return postings within a recent window (see
 # JOBSPY_HOURS_OLD / ADZUNA_MAX_DAYS_OLD in their own connectors) -- fine once
 # there's a backlog to keep fresh, but on a near-empty database (a fresh

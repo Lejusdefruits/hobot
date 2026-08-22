@@ -538,28 +538,26 @@ async def applications_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@tree.command(name="sources", description="Status of each discovery source (last attempt, errors, backing off or not)")
+@tree.command(name="sources", description="Status of each discovery source (configured, last attempt, errors, backing off or not)")
 async def sources_status(interaction: discord.Interaction):
     from core.circuit_breaker import is_backed_off
 
-    rows = queries.get_sources_status()
-
-    if not rows:
-        embed = base_embed("Sources", description="No source has run yet.")
-        await interaction.response.send_message(embed=embed)
-        return
-
     embed = base_embed("Discovery source status")
-    for r in rows:
-        backed_off, until = is_backed_off(r["source"])
-        if backed_off:
-            value = f"**Backed off** until {until}\nLast attempt: {r['finished_at']}"
-            if r["errors"]:
-                value += f"\n{r['errors'][:200]}"
-        elif r["errors"]:
-            value = f"Last attempt failed ({r['finished_at']}):\n{r['errors'][:200]}"
+    for r in queries.get_sources_status():
+        if not r["configured"]:
+            value = "Not configured -- see the matching section in .env"
+        elif r["finished_at"] is None:
+            value = "Configured, hasn't run yet"
         else:
-            value = f"OK -- {r['finished_at']}\n{r['n_found']} found, {r['n_new']} new"
+            backed_off, until = is_backed_off(r["source"])
+            if backed_off:
+                value = f"**Backed off** until {until}\nLast attempt: {r['finished_at']}"
+                if r["errors"]:
+                    value += f"\n{r['errors'][:200]}"
+            elif r["errors"]:
+                value = f"Last attempt failed ({r['finished_at']}):\n{r['errors'][:200]}"
+            else:
+                value = f"OK -- {r['finished_at']}\n{r['n_found']} found, {r['n_new']} new"
         embed.add_field(name=common.source_label(r["source"]), value=value[:1024], inline=False)
     await interaction.response.send_message(embed=embed)
 

@@ -99,22 +99,65 @@ def list_applications(limit: int = 15) -> list:
         ).fetchall()
 
 
-def get_sources_status() -> list:
-    """Raw rows only -- backoff state (core.circuit_breaker.is_backed_off)
-    is computed per-row by the caller, same for every interface."""
-    from graphs.discovery_graph import ACTIVE_DISCOVERY_SOURCES
+def get_sources_status() -> list[dict]:
+    """One row per ACTIVE_DISCOVERY_SOURCES entry, always -- a source that
+    has never run (not configured yet, or configured but discovery hasn't
+    reached it) used to be silently absent from this list entirely (the old
+    query only returned sources that already had a run_log row), which
+    looked identical to "this source doesn't exist" instead of "nothing to
+    report yet." `configured` (is_source_configured) is what actually
+    answers "is this one even set up" -- backoff state
+    (core.circuit_breaker.is_backed_off) is computed per-row by the caller,
+    same for every interface."""
+    from graphs.discovery_graph import ACTIVE_DISCOVERY_SOURCES, is_source_configured
 
     placeholders = ",".join("?" * len(ACTIVE_DISCOVERY_SOURCES))
     with get_connection() as conn:
-        return conn.execute(
-            f"""SELECT r.source, r.finished_at, r.n_found, r.n_new, r.errors
-               FROM run_log r
-               JOIN (SELECT source, MAX(id) AS max_id FROM run_log
-                     WHERE run_type = 'discovery' AND source IN ({placeholders}) GROUP BY source) m
-                 ON r.source = m.source AND r.id = m.max_id
-               ORDER BY r.source""",
-            ACTIVE_DISCOVERY_SOURCES,
-        ).fetchall()
+        last_runs = {
+            r["source"]: r for r in conn.execute(
+                f"""SELECT r.source, r.finished_at, r.n_found, r.n_new, r.errors
+                   FROM run_log r
+                   JOIN (SELECT source, MAX(id) AS max_id FROM run_log
+                         WHERE run_type = 'discovery' AND source IN ({placeholders}) GROUP BY source) m
+                     ON r.source = m.source AND r.id = m.max_id""",
+                ACTIVE_DISCOVERY_SOURCES,
+            ).fetchall()
+        }
+    return [
+        {
+            "source": source,
+            "configured": is_source_configured(source),
+            "finished_at": last_runs[source]["finished_at"] if source in last_runs else None,
+            "n_found": last_runs[source]["n_found"] if source in last_runs else 0,
+            "n_new": last_runs[source]["n_new"] if source in last_runs else 0,
+            "errors": last_runs[source]["errors"] if source in last_runs else None,
+        }
+        for source in ACTIVE_DISCOVERY_SOURCES
+    ]
+
+
+def get_daemon_liveness(stale_after_seconds: int = 90) -> dict:
+    """Is the daemon process actually running right now, and is its Discord
+    bot connected -- based on daemon.py's own heartbeat (daemon_flags,
+    written every 30s, see daemon.py::HEARTBEAT_INTERVAL_SECONDS), not just
+    "did it do something recently." stale_after_seconds (90 = 3 heartbeat
+    intervals, a generous margin for scheduler jitter) is how old a
+    heartbeat can be before it's treated as stale; missing entirely also
+    means not running. The terminal UI is its own separate process with no
+    other way to know this."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT heartbeat_at, discord_status FROM daemon_flags WHERE id = 1").fetchone()
+    if not row or not row["heartbeat_at"]:
+        return {"running": False, "heartbeat_at": None, "discord_status": None}
+
+    from datetime import datetime, timedelta, timezone
+    heartbeat_utc = datetime.fromisoformat(row["heartbeat_at"]).replace(tzinfo=timezone.utc)
+    running = datetime.now(timezone.utc) - heartbeat_utc <= timedelta(seconds=stale_after_seconds)
+    return {
+        "running": running,
+        "heartbeat_at": row["heartbeat_at"],
+        "discord_status": row["discord_status"] if running else None,
+    }
 
 
 def get_strategy() -> list:

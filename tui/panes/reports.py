@@ -41,7 +41,7 @@ class ReportsPane(Vertical):
     def on_mount(self) -> None:
         self._notification_detail: dict[str, str] = {}
         self.query_one("#sources-table", DataTable).add_columns(
-            "Source", "Backed off", "Until", "Last run", "Found", "New", "Errors")
+            "Source", "Configured", "Backed off", "Until", "Last run", "Found", "New", "Errors")
         self.query_one("#quotas-table", DataTable).add_columns("Source", "Used", "Limit", "Remaining")
         self.query_one("#log-table", DataTable).add_columns(
             "Source", "Query", "Found", "New", "Errors", "Finished at")
@@ -71,8 +71,9 @@ class ReportsPane(Vertical):
         for r in queries.get_sources_status():
             backed_off, until = is_backed_off(r["source"])
             table.add_row(
-                common.source_label(r["source"]), "yes" if backed_off else "no", until or "-",
-                r["finished_at"] or "-", str(r["n_found"]), str(r["n_new"]), r["errors"] or "-",
+                common.source_label(r["source"]), "yes" if r["configured"] else "no",
+                "yes" if backed_off else "no", until or "-",
+                r["finished_at"] or "never", str(r["n_found"]), str(r["n_new"]), r["errors"] or "-",
             )
 
     def _refresh_quotas(self) -> None:

@@ -559,12 +559,16 @@ python cli.py
 
 Seven tabs (`F1`-`F7` to jump between them, or click/Tab through them):
 
-- **Status** -- active/paused, the scoring backlog, the best open posting,
-  last discovery/mail-check runs plus when each is next due (computed from
-  the same cron/interval config the daemon itself schedules from, not a live
-  connection to it -- the terminal UI is its own process, see "Terminal UI"
-  above), and buttons for pause/resume, an on-demand weekly digest, and a
-  reset (wipes everything, asks for confirmation first).
+- **Status** -- active/paused, whether the daemon process itself is actually
+  running right now and whether its Discord bot is connected (daemon.py
+  writes a heartbeat to the database every 30s specifically so this separate
+  process can tell -- "not running" means no heartbeat in the last 90s, not
+  just "hasn't done anything lately"), the scoring backlog, the best open
+  posting, last discovery/mail-check runs plus when each is next due
+  (computed from the same cron/interval config the daemon itself schedules
+  from, not a live connection to it), and buttons for pause/resume, an
+  on-demand weekly digest, and a reset (wipes everything, asks for
+  confirmation first).
 - **Offers** -- the best-scored open postings; Enter on a row (scored or
   still waiting to be scored) opens the full posting with mark-applied /
   exclude / tailor-CV / edit-and-save-the-letter / open-the-original-listing
@@ -581,8 +585,11 @@ Seven tabs (`F1`-`F7` to jump between them, or click/Tab through them):
   go through Chat instead, same as Discord's `/profile`/`/ask` flow).
 - **Chat** -- the same agent `/ask` talks to, full conversation history,
   proposed email sends shown with their own confirm button.
-- **Reports** -- sources, quotas, search log, search strategy,
-  notifications, funnel, score breakdown, and an on-demand gap analysis.
+- **Reports** -- sources (every discovery source, always, not just ones that
+  already ran -- a **Configured** column shows whether it actually has what
+  it needs, e.g. an API key, separately from whether it's found anything
+  yet), quotas, search log, search strategy, notifications, funnel, score
+  breakdown, and an on-demand gap analysis.
 
 No host, port, or login to configure -- it never listens on the network,
 it's just a program you run in your own terminal, so there's nothing for
@@ -722,7 +729,7 @@ mirror something a Reports/Status/Drafts pane shows at a glance there:
 | `/funnel` | Conversion funnel: found → scored → letter → sent → reply → interview |
 | `/breakdown` | Postings per score tier, and how many are still waiting to be scored |
 | `/applications` | Lists applications already sent or marked |
-| `/sources` | Status of each discovery source (last attempt, errors, backing off or not) |
+| `/sources` | Status of each discovery source (configured or not, last attempt, errors, backing off or not) |
 | `/strategy` | Search keyword currently in use for each discovery source |
 | `/log` | Recent history of discovery runs (keywords searched, results found) |
 | `/notifications` | History of notifications sent (postings, mail, digest, cleanup) |

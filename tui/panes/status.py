@@ -68,6 +68,7 @@ class StatusPane(VerticalScroll):
     def compose(self) -> ComposeResult:
         with Horizontal(classes="card-row"):
             yield Static(id="card-state", classes="card")
+            yield Static(id="card-daemon", classes="card")
             yield Static(id="card-backlog", classes="card")
             yield Static(id="card-best", classes="card")
         yield Static("Discovery", classes="section-title")
@@ -104,6 +105,22 @@ class StatusPane(VerticalScroll):
             f"{'Paused' if paused else 'Active'}[/]"
         )
         self.query_one("#toggle-pause", Button).label = "Resume" if paused else "Pause"
+
+        liveness = queries.get_daemon_liveness()
+        daemon_card = self.query_one("#card-daemon", Static)
+        if not liveness["running"]:
+            daemon_card.update(
+                "[b]Daemon[/b]\n[$error]Not running[/]\n"
+                "(no heartbeat -- start it with `python daemon.py`)"
+            )
+        else:
+            discord_status = liveness["discord_status"]
+            discord_line = {
+                "connected": "[$success]Discord: connected[/]",
+                "connecting": "[$warning]Discord: connecting...[/]",
+                "disabled": "Discord: not configured",
+            }.get(discord_status, "Discord: unknown")
+            daemon_card.update(f"[b]Daemon[/b]\n[$success]Running[/]\n{discord_line}")
 
         self.query_one("#card-backlog", Static).update(f"[b]Scoring queue[/b]\n{backlog} unscored")
 

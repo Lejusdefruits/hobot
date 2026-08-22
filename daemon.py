@@ -54,6 +54,29 @@ FUNDING_CHECK_INTERVAL_DAYS = int(os.environ.get("FUNDING_CHECK_INTERVAL_DAYS", 
 
 scheduler = BackgroundScheduler()
 
+HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+def _heartbeat() -> None:
+    """Writes a fresh timestamp + the Discord connection state to
+    daemon_flags every HEARTBEAT_INTERVAL_SECONDS -- the only way the
+    terminal UI (its own separate process, see core/daemon_state.py) can
+    tell "is the daemon actually running right now" apart from "it ran
+    something a while ago." core.queries.get_daemon_liveness() treats a
+    heartbeat older than a few intervals (or none at all) as not running."""
+    from tools.discord_bot import DISCORD_ENABLED
+    if not DISCORD_ENABLED:
+        discord_status = "disabled"
+    else:
+        from tools.discord_bot import client
+        discord_status = "connected" if client.is_ready() else "connecting"
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO daemon_flags (id, heartbeat_at, discord_status) VALUES (1, datetime('now'), ?) "
+            "ON CONFLICT(id) DO UPDATE SET heartbeat_at = excluded.heartbeat_at, discord_status = excluded.discord_status",
+            (discord_status,),
+        )
+
 
 def _run_discovery() -> None:
     if daemon_state.is_paused():
@@ -329,7 +352,12 @@ def start() -> None:
         next_run_time=funding_first_run,
         id="funding_check", max_instances=1, coalesce=True,
     )
+    scheduler.add_job(
+        _heartbeat, "interval", seconds=HEARTBEAT_INTERVAL_SECONDS,
+        id="heartbeat", max_instances=1, coalesce=True,
+    )
     scheduler.start()
+    _heartbeat()  # first one right away -- otherwise the terminal UI reads "not running" for the first 30s
     daemon_state.scheduler = scheduler  # published for /status and the agent's statut_veille tool
     daemon_state.run_weekly_digest_fn = _run_weekly_digest  # published for /digest
     log.info(

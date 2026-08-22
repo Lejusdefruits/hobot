@@ -152,9 +152,17 @@ CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created
 -- toggle. DB-backed rather than a plain module global (core/daemon_state.py)
 -- because the terminal UI runs as its own separate process -- it has no
 -- access to the daemon's in-memory state, only what's in this database.
+-- heartbeat_at/discord_status are the same idea applied to "is the daemon
+-- process itself even running": daemon.py writes both every 30s (see its
+-- _heartbeat job), so a heartbeat_at older than that (or NULL) means the
+-- daemon isn't running right now, not just that it hasn't done anything
+-- lately -- core.queries.get_daemon_liveness() is the one place that turns
+-- this into a yes/no the terminal UI's Status pane shows.
 CREATE TABLE IF NOT EXISTS daemon_flags (
-    id      INTEGER PRIMARY KEY CHECK (id = 1),
-    paused  INTEGER NOT NULL DEFAULT 0
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    paused          INTEGER NOT NULL DEFAULT 0,
+    heartbeat_at    TEXT,
+    discord_status  TEXT
 );
 
 -- Companies tools/sources_ats.py checks for Greenhouse/Ashby/Lever openings
@@ -282,6 +290,13 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
         run_log_cols = {row["name"] for row in conn.execute("PRAGMA table_info(run_log)")}
         if "query" not in run_log_cols:
             _add_column(conn, "run_log", "query TEXT")
+
+    if "daemon_flags" in tables:
+        flags_cols = {row["name"] for row in conn.execute("PRAGMA table_info(daemon_flags)")}
+        if "heartbeat_at" not in flags_cols:
+            _add_column(conn, "daemon_flags", "heartbeat_at TEXT")
+        if "discord_status" not in flags_cols:
+            _add_column(conn, "daemon_flags", "discord_status TEXT")
     conn.commit()
 
 
