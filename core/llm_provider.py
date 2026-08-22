@@ -22,6 +22,21 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "ollama").lower()
 
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3.8")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+# Without this, Ollama picks its own context window (server default, or
+# whatever it auto-shrinks to fit available VRAM) -- confirmed in practice to
+# come in well under what this agent actually needs: the system prompt plus
+# ~37 tool schemas (graphs/chat_agent.py) alone measured at over 6000 tokens
+# on a real call, before a single token of conversation history (trimmed to
+# CHAT_AGENT_MAX_CONTEXT_TOKENS, 6000 by default) or the model's own
+# "thinking" (qwen3.8 is a reasoning model) is added. When the real prompt
+# doesn't fit, Ollama silently truncates it instead of erroring -- observed
+# directly to corrupt which tools the model even sees (it invented a tool
+# name that doesn't exist in TOOLS) and to leave it so little room that the
+# final answer comes back empty or cut off mid-thought. 20000 comfortably
+# covers system prompt + tools + full history + thinking + a real answer;
+# raise it further for a much longer CHAT_AGENT_MAX_CONTEXT_TOKENS, lower it
+# only if your hardware can't spare the extra VRAM for the larger KV cache.
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "20000"))
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
@@ -47,7 +62,9 @@ def get_chat_model(temperature: float = 0.1) -> BaseChatModel:
 def _build_chat_model(temperature: float) -> BaseChatModel:
     if LLM_PROVIDER == "ollama":
         from langchain_ollama import ChatOllama
-        return ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_HOST, temperature=temperature)
+        return ChatOllama(
+            model=OLLAMA_MODEL, base_url=OLLAMA_HOST, temperature=temperature, num_ctx=OLLAMA_NUM_CTX,
+        )
 
     if LLM_PROVIDER == "openai":
         from langchain_openai import ChatOpenAI
