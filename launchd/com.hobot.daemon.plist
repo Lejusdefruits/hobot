@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS equivalent of systemd/hobot.service: runs daemon.py continuously
+  in the background via launchd, systemd's counterpart on macOS. Install:
+
+    mkdir -p ~/Library/LaunchAgents
+    cp launchd/com.hobot.daemon.plist ~/Library/LaunchAgents/
+    # edit the copied file: replace both /path/to/hobot with the real path
+    # where you cloned the repo
+    launchctl load ~/Library/LaunchAgents/com.hobot.daemon.plist
+
+  Managing it: `launchctl list | grep hobot` (running if listed),
+  `launchctl unload ~/Library/LaunchAgents/com.hobot.daemon.plist` to stop,
+  `tail -f /path/to/hobot/daemon.log` for live logs. KeepAlive restarts it
+  after a crash; RunAtLoad starts it at login (a LaunchAgent, not a
+  LaunchDaemon, so it only runs while you're logged in: the right choice
+  for a personal tool watching your own inbox/Discord).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hobot.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/path/to/hobot/.venv/bin/python</string>
+        <string>-u</string>
+        <string>/path/to/hobot/daemon.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/path/to/hobot</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/path/to/hobot/daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/hobot/daemon.log</string>
+</dict>
+</plist>

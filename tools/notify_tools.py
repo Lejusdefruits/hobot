@@ -11,16 +11,77 @@ graphs/chat_agent.py::dernieres_notifications, which reads it back.
 """
 import json
 import subprocess
+import sys
+
+
+def _sanitize_for_script_literal(text: str) -> str:
+    """Neither AppleScript's nor PowerShell's string-literal escaping rules
+    can be exercised on this Linux box (osascript/powershell.exe don't exist
+    here to test against) -- rather than trust untested escaping logic
+    against a title/message that can contain arbitrary text (an offer title,
+    a company name), strip the characters that could break out of a quoted
+    literal (or, worse, get interpreted as script) instead of escaping them.
+    A title/message occasionally missing a quote character is a cosmetic
+    loss; a broken or injectable notification command is not."""
+    for ch in ('"', "'", "`", "\\", "$"):
+        text = text.replace(ch, "")
+    return " ".join(text.split())  # also collapses newlines to spaces
+
+
+def _notify_linux(title: str, message: str, urgency: str) -> None:
+    subprocess.run(
+        ["notify-send", "--app-name=hobot", f"--urgency={urgency}", title, message],
+        check=True, timeout=5,
+    )
+
+
+def _notify_macos(title: str, message: str) -> None:
+    # osascript ships with every macOS install -- no extra dependency, unlike
+    # the Linux/Windows paths which both rely on something that may or may not
+    # be present (notify-send, PowerShell's Forms assembly).
+    title, message = _sanitize_for_script_literal(title), _sanitize_for_script_literal(message)
+    script = f'display notification "{message}" with title "{title}"'
+    subprocess.run(["osascript", "-e", script], check=True, timeout=5)
+
+
+def _notify_windows(title: str, message: str) -> None:
+    # No new pip dependency: System.Windows.Forms.NotifyIcon ships with every
+    # Windows .NET install, reachable from the powershell.exe already on PATH.
+    # A balloon tip, not a modern Action Center toast -- the latter needs a
+    # registered AppUserModelID (effectively an installed app identity),
+    # which a plain Python script run from a terminal doesn't have.
+    title, message = _sanitize_for_script_literal(title), _sanitize_for_script_literal(message)
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms; "
+        "$n = New-Object System.Windows.Forms.NotifyIcon; "
+        "$n.Icon = [System.Drawing.SystemIcons]::Information; "
+        f'$n.BalloonTipTitle = "{title}"; '
+        f'$n.BalloonTipText = "{message}"; '
+        "$n.Visible = $true; "
+        "$n.ShowBalloonTip(5000); "
+        "Start-Sleep -Seconds 5; "
+        "$n.Dispose()"
+    )
+    subprocess.run(["powershell", "-NoProfile", "-Command", script], check=True, timeout=10)
 
 
 def notify_desktop(title: str, message: str, urgency: str = "normal") -> bool:
-    """urgency: 'low' | 'normal' | 'critical'. Returns False if notify-send is
-    missing or fails, instead of crashing the graph over a failed notification."""
+    """urgency: 'low' | 'normal' | 'critical' -- only meaningful on Linux
+    (notify-send), ignored on macOS/Windows, neither of which expose an
+    equivalent through the mechanism used here. Returns False (never raises)
+    if the platform's notifier is missing or fails, so a failed desktop
+    notification never crashes the graph that triggered it -- Discord (if
+    configured) and the notifications table (core/db.py) stay the guaranteed
+    channels either way."""
     try:
-        subprocess.run(
-            ["notify-send", "--app-name=hobot", f"--urgency={urgency}", title, message],
-            check=True, timeout=5,
-        )
+        if sys.platform.startswith("linux"):
+            _notify_linux(title, message, urgency)
+        elif sys.platform == "darwin":
+            _notify_macos(title, message)
+        elif sys.platform == "win32":
+            _notify_windows(title, message)
+        else:
+            return False
         return True
     except Exception as e:
         print(f"[notify_desktop] failed: {e}")

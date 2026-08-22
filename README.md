@@ -7,6 +7,69 @@ replies, and can dig up company contacts. Runs on a local LLM (Ollama) by
 default, no paid API required to work -- a cloud key (OpenAI/Anthropic) is
 a drop-in alternative if you'd rather not run a model locally.
 
+**Contents:** [Quick start](#quick-start) &middot;
+[Platforms](#platforms) &middot;
+[What it does](#what-it-does) &middot;
+[Required vs. optional](#required-vs-optional) &middot;
+[Base install](#base-install) &middot;
+[Job sources](#job-sources-and-search-coverage) &middot;
+[French job sources](#french-job-sources-optional) &middot;
+[CV tailoring](#cv-tailoring-optional) &middot;
+[Mail monitoring](#mail-monitoring-optional) &middot;
+[Web search & contacts](#web-search-and-company-contacts-optional) &middot;
+[Terminal UI](#terminal-ui) &middot;
+[Accessibility](#accessibility) &middot;
+[Running it continuously](#running-it-continuously) &middot;
+[Commands](#commands) &middot;
+[Architecture](#architecture) &middot;
+[Design and safety](#design-and-safety)
+
+## Quick start
+
+```bash
+git clone <your-fork-or-this-repo> hobot && cd hobot
+./setup.sh          # Linux/macOS. On Windows (PowerShell): .\setup.ps1
+```
+
+Open `.env`, fill in the `REQUIRED` block at the top (an LLM -- Ollama by
+default, nothing to pay for; see [Base install](#base-install) for a cloud
+key instead), then:
+
+```bash
+.venv/bin/python daemon.py    # discovery + Discord (if configured)
+.venv/bin/python cli.py       # terminal UI, in a second terminal
+# Windows: .venv\Scripts\python.exe instead of .venv/bin/python
+```
+
+That's the whole loop already running, headless if you skip Discord.
+Everything below this point -- Discord, French job sources, mail
+monitoring, CV tailoring, company contacts -- is optional, each one turned
+on by filling in its own section of `.env`; see
+[Required vs. optional](#required-vs-optional) for what each needs.
+
+## Platforms
+
+One codebase -- no separate Windows/macOS/Linux build to pick between.
+Everything here is plain Python plus libraries that ship native builds for
+all three (Ollama, Textual, WeasyPrint, LibreOffice). Desktop notifications
+and the terminal UI's "open file" buttons already detect the OS and use the
+right mechanism underneath (`notify-send`/`osascript`/a PowerShell balloon
+tip; `xdg-open`/`open`/`os.startfile`) -- nothing to configure there.
+
+What actually differs per OS:
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| Base install | `./setup.sh` | `./setup.sh` | `.\setup.ps1` |
+| Terminal for `cli.py` | any | Terminal.app, iTerm2 | Windows Terminal (recommended over legacy `cmd.exe`) |
+| Run continuously in the background | systemd, see [below](#running-it-continuously) | launchd, see [below](#running-it-continuously) | Task Scheduler, see [below](#running-it-continuously) |
+| WeasyPrint's system libraries (Pango/Cairo) | usually already present, else one `apt`/`dnf` line | `brew install pango` | a one-time GTK3 runtime installer -- see [WeasyPrint's own docs](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#windows) |
+
+`.docx` CV tailoring additionally needs
+[LibreOffice](https://www.libreoffice.org/) (`soffice` on `PATH`) on any of
+the three -- same install either way, just from your OS's normal package
+manager or installer.
+
 ## What it does
 
 - **Finds postings continuously** (JobSpy, scraping, no API key needed, plus
@@ -71,15 +134,18 @@ all the same day.
 
 ## Base install
 
+The [Quick start](#quick-start) above (`setup.sh`/`setup.ps1`) already does
+steps 1-2 below -- venv, dependencies, `.env` copied from the example. This
+section is the same install broken into its individual pieces, for when you
+want to see (or change) what each one actually does.
+
 ### Requirements
 
 Python 3.10 or newer (built and tested on 3.12), `git`, and either something
 to run an Ollama model on (a 7-8B model with tool-calling support runs fine on
 a consumer GPU, or CPU-only if you're fine with slower replies) or a cloud LLM
-key (see "Cloud LLM" below) if you'd rather skip running a model yourself. The
-systemd instructions below assume Linux; on macOS or Windows, `python
-daemon.py` in a terminal that stays open does the same thing, just without
-automatic restart on boot.
+key (see "Cloud LLM" below) if you'd rather skip running a model yourself. See
+[Platforms](#platforms) for what else differs by OS.
 
 ### 1. Ollama
 
@@ -133,9 +199,16 @@ no need to remove them if you switch back later.
 ```bash
 git clone <your-fork-or-this-repo> hobot
 cd hobot
+./setup.sh          # Linux/macOS. On Windows (PowerShell): .\setup.ps1
+```
+
+or by hand, same result:
+
+```bash
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+cp .env.example .env
 ```
 
 ### 3. Create the Discord bot (optional -- skip if you only want the terminal UI)
@@ -158,13 +231,10 @@ pip install -r requirements.txt
 
 ### 4. Minimal configuration and first launch
 
-```bash
-cp .env.example .env
-```
-
-Open `.env` and fill in your LLM (`OLLAMA_MODEL`, or the cloud block above),
-and `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` if you want Discord. Everything
-else can stay empty for now. Run it:
+`.env` already exists if step 2 used `setup.sh`/`setup.ps1`; otherwise
+`cp .env.example .env` first. Open it and fill in your LLM (`OLLAMA_MODEL`,
+or the cloud block above), and `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` if
+you want Discord. Everything else can stay empty for now. Run it:
 
 ```bash
 python daemon.py
@@ -389,10 +459,43 @@ conversation, separate from any Discord user's, so the two never interleave
 unexpectedly by default. Set it to a real Discord user id instead if you want
 one shared conversation across both interfaces.
 
+## Accessibility
+
+The terminal UI is built on [Textual](https://textual.textualize.io/), which
+implements a couple of standard, external conventions -- no flag inside this
+project needed:
+
+- `NO_COLOR=1 python cli.py` switches every screen to a monochrome
+  rendering (the [no-color.org](https://no-color.org) convention, read by
+  Textual itself). Every status here is backed by real text as well as
+  color -- `Active`/`Paused`, `yes`/`no`, a score number -- so nothing is
+  lost in this mode; that's checked by actually running it this way, not
+  assumed.
+- `TEXTUAL_ANIMATIONS=none python cli.py` turns off the (already minimal)
+  UI animations, for anyone sensitive to motion.
+- Fully operable by keyboard alone: `Tab`/`Shift+Tab` moves focus,
+  `Enter`/`Space` activates a button or opens a posting, arrow keys move
+  inside a table, `F1`-`F7` jump between tabs, `Ctrl+P` opens Textual's own
+  command palette (theme switching included). No feature here needs a mouse.
+
+Screen readers: a terminal screen reader (NVDA/JAWS on Windows Terminal,
+VoiceOver on Terminal.app, Orca on Linux) reads whatever text the terminal
+draws, the same as any other terminal program -- there's no special
+integration on top of that here, and a live-updating dashboard is
+inherently noisier for one than a static command-line tool would be.
+`NO_COLOR=1` combined with your screen reader's own review-cursor/say-all
+commands is the most usable combination available today; if that's still not
+enough, Discord (plain text and embeds, whatever accessibility tooling you
+already use there) is the more accessible way to run this right now.
+
 ## Running it continuously
 
-In development, `python daemon.py` in a terminal is enough. To run it in the
-background without a session open (Linux, user-level systemd):
+In development, `python daemon.py` in a terminal is enough on any OS. All
+three options below are the daemon only -- `cli.py` stays something you run
+by hand in your own terminal whenever you want it, whether or not the
+background service is running.
+
+### Linux (systemd, user-level)
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -408,9 +511,44 @@ Managing it: `systemctl --user status|restart|stop hobot`,
 `journalctl --user -u hobot -f` for live logs. The service is deliberately
 constrained (2GB RAM cap, low CPU priority, restarts after a crash but gives
 up after 5 failures in 10 minutes) so a problem in this process can't drag
-down the rest of the machine. This unit is the daemon only -- `python cli.py`
-stays something you run by hand in your own terminal whenever you want it,
-whether or not this service is running.
+down the rest of the machine.
+
+### macOS (launchd)
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cp launchd/com.hobot.daemon.plist ~/Library/LaunchAgents/
+# edit the copied file: replace both occurrences of /path/to/hobot with the
+# real path where you cloned the repo
+launchctl load ~/Library/LaunchAgents/com.hobot.daemon.plist
+```
+
+Managing it: `launchctl list | grep hobot` (running if listed),
+`launchctl unload ~/Library/LaunchAgents/com.hobot.daemon.plist` to stop,
+`tail -f daemon.log` in the repo directory for live logs. Runs only while
+you're logged in (a LaunchAgent, not a LaunchDaemon) -- the right scope for
+a personal tool watching your own inbox/Discord, and restarts itself after a
+crash the same way the systemd unit does.
+
+### Windows (Task Scheduler)
+
+No bundled task file here (Task Scheduler's XML export ties itself to the
+exporting machine's paths and user SID, so a checked-in one would need
+editing anyway) -- five minutes in the GUI instead:
+
+1. Open Task Scheduler, **Create Task** (not *Basic Task*, so the extra
+   options below are available).
+2. **General**: name it `hobot`, **Run whether user is logged on or not**
+   if you want it to survive a logout, not just a locked screen.
+3. **Triggers** -> **New**: **At log on**.
+4. **Actions** -> **New**: Program/script `C:\path\to\hobot\.venv\Scripts\python.exe`,
+   arguments `-u daemon.py`, "Start in" `C:\path\to\hobot`.
+5. **Settings**: check **If the task fails, restart every** (1 minute, a
+   few attempts) for the same crash-recovery the systemd/launchd options get.
+
+`Get-ScheduledTask -TaskName hobot` (PowerShell) to check it's registered;
+the Task Scheduler GUI's **History** tab for logs, since this path has
+nothing built-in equivalent to `journalctl`/`tail -f`.
 
 ## First steps in Discord
 
@@ -458,6 +596,8 @@ right one.
 ```
 daemon.py            — the daemon process: scheduler (APScheduler) + Discord bot (optional)
 cli.py                — terminal UI entry point (its own separate process, see "Terminal UI" above)
+setup.sh, setup.ps1  — base install (venv, dependencies, .env) for Linux/macOS and Windows
+systemd/, launchd/    — background-service unit files, see "Running it continuously"
 graphs/
   discovery_graph.py  — fetch (JobSpy + French sources) -> dedup -> score (LLM) -> letters -> log
   email_graph.py      — fetch mail -> classify (LLM) -> draft replies

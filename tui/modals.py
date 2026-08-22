@@ -246,9 +246,16 @@ class OfferDetailScreen(ModalScreen[str | None]):
     def _open_file(self, path: str | None) -> None:
         if not path or not Path(path).exists():
             return
+        import os
         import subprocess
+        import sys
         try:
-            subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if sys.platform == "win32":
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
 
