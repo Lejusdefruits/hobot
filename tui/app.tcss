@@ -63,6 +63,17 @@ TabbedContent {
     height: auto;
 }
 
+#profile-edit-form {
+    border: round $primary;
+    padding: 1 2;
+    margin-bottom: 1;
+    height: auto;
+}
+
+#profile-edit-form Input {
+    margin-bottom: 1;
+}
+
 .section-title {
     text-style: bold underline;
     margin-bottom: 1;
@@ -178,28 +189,6 @@ CvFilePickerModal > Vertical {
 
 CvFilePickerModal #cv-tree {
     height: 1fr;
-}
-
-ProfileEditModal {
-    align: center middle;
-}
-
-ProfileEditModal > VerticalScroll {
-    width: 70;
-    /* height: auto (content-driven, no cap) had the same off-screen-button
-       problem as CvFilePickerModal's fixed height above, just from the
-       other direction -- content taller than the terminal instead of a
-       height that didn't shrink to fit it. Capped and scrollable now (the
-       VerticalScroll in tui/modals.py's compose()), same fix in spirit as
-       OfferDetailScreen's own VerticalScroll wrapper -- scrolling is the
-       safety net for whatever terminal it still doesn't fit; the tighter
-       padding here is just to make that unnecessary on an ordinary 80x24
-       terminal in the first place. */
-    height: auto;
-    max-height: 90%;
-    border: round $primary;
-    background: $surface;
-    padding: 0 2;
 }
 
 
