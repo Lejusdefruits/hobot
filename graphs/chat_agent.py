@@ -40,8 +40,8 @@ from langgraph.prebuilt import create_react_agent
 from core.db import get_connection, get_user_profile
 from core.llm_provider import get_chat_model
 from tools import common
-
-GMAIL_DAILY_SEND_CAP = int(os.environ.get("GMAIL_DAILY_SEND_CAP", "15"))
+from tools.email_tools import GMAIL_DAILY_SEND_CAP
+from tools.ghost_job import check_ghost_job
 
 # Pending send proposals waiting on a human click -- see the module docstring.
 PENDING_SENDS: dict[str, dict] = {}
@@ -52,7 +52,7 @@ def rechercher_offres(mot_cle: str = "", score_min: int = 0, limite: int = 10) -
     """Searches offers already in the database (not a new scrape) by keyword
     in the title/company, with an optional minimum score. Offers already
     marked 'applied' are excluded."""
-    query = ("SELECT id, title, company, location, score, source FROM offers "
+    query = ("SELECT id, title, company, location, score, source, description, first_seen_at FROM offers "
               "WHERE status NOT IN ('applied', 'excluded', 'expired')")
     params: list = []
     if score_min:
@@ -68,10 +68,15 @@ def rechercher_offres(mot_cle: str = "", score_min: int = 0, limite: int = 10) -
         rows = conn.execute(query, params).fetchall()
     if not rows:
         return "No offers found matching these criteria."
-    return "\n".join(
-        f"#{r['id']} [{r['score']}] {r['title']} -- {r['company']} ({r['location']}) -- {common.offer_type_label(r['source'])}"
-        for r in rows
-    )
+    lines = []
+    for r in rows:
+        line = (f"#{r['id']} [{r['score']}] {r['title']} -- {r['company']} ({r['location']}) -- "
+                f"{common.offer_type_label(r['source'])}")
+        is_ghost, _ = check_ghost_job(r["description"], r["first_seen_at"])
+        if is_ghost:
+            line += " -- possible ghost job"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 @tool
@@ -253,7 +258,7 @@ def details_offre(offer_id: int) -> str:
     with get_connection() as conn:
         row = conn.execute(
             "SELECT title, company, location, description, url, score, score_reason, company_domain, "
-            "status, last_seen_at, source FROM offers WHERE id = ?",
+            "status, last_seen_at, first_seen_at, source FROM offers WHERE id = ?",
             (offer_id,),
         ).fetchone()
         if not row:
@@ -300,10 +305,12 @@ def details_offre(offer_id: int) -> str:
         contacts_note = f"\nKnown official site: {row['company_domain']} (no contact recorded yet)"
 
     status_note = " -- DEAD LINK, don't suggest applying to this one" if row["status"] == "expired" else ""
+    is_ghost, ghost_reason = check_ghost_job(row["description"], row["first_seen_at"])
+    ghost_note = f"\nWarning: {ghost_reason} -- mention this to the user before drafting anything" if is_ghost else ""
     return (f"Title: {row['title']}\nCompany: {row['company']}\n"
             f"Type: {common.offer_type_label(row['source'])}\nLocation: {row['location']}\n"
             f"Score: {row['score']} ({row['score_reason'] or 'no justification recorded'})\n"
-            f"Status: {row['status']}{status_note}\n"
+            f"Status: {row['status']}{status_note}{ghost_note}\n"
             f"Last confirmed online: {row['last_seen_at']}\n"
             f"URL: {row['url']}\nDescription: {description}{truncated_note}{contacts_note}")
 
@@ -371,6 +378,115 @@ def rechercher_entreprise(nom_entreprise: str, contexte: str = "") -> str:
     letter if the sector/city clearly match the posting, otherwise ignore it."""
     from tools import web_search
     return web_search.search_company(nom_entreprise, hint=contexte) or "No information found."
+
+
+@tool
+def surveiller_entreprise(nom_entreprise: str) -> str:
+    """Adds a company to the ATS watchlist (core/ats_watchlist.py) so its
+    Greenhouse/Ashby/Lever job board gets checked on every scheduled
+    discovery run from now on, alongside JobSpy/LBA/Adzuna/France Travail --
+    for a company known to use one of those three ATS platforms, not a
+    general "look this company up" tool. Resolution is best-effort (tries a
+    few common spellings of the company name against all three platforms'
+    public APIs): if nothing matches, this returns a clear explanation
+    rather than guessing, and the user can be told to check the company's
+    careers page for the exact slug if they're sure it's on one of the
+    three.
+
+    On success, also creates a spontaneous-application lead for this company
+    (same idea as La Bonne Alternance/La Bonne Boite's recruiter leads,
+    tools/sources_lba.py: a placeholder posting for a company with no open
+    role yet, so there's something real to act on -- mark applied, exclude,
+    tailor a CV -- rather than just a name sitting in a list) and looks up a
+    contact for it right away (rechercher_contacts_entreprise: Pappers +
+    web search first, Hunter.io/Snov.io only as their own existing
+    fallback -- unchanged, this just triggers the same tool a human would
+    call by hand). The lead gets picked up by the next scheduled run for
+    scoring and, if it scores well, an automatic cover letter -- nothing
+    extra needed here for that."""
+    from core.ats_watchlist import add_company
+    ok, message = add_company(nom_entreprise)
+    if not ok:
+        return message
+
+    from graphs.discovery_graph import persist_adhoc_offers
+    from tools.common import make_offer
+
+    lead = make_offer(
+        source="ats_lead", external_id=None, title=f"Spontaneous interest -- {nom_entreprise}",
+        company=nom_entreprise, location=None,
+        description=(
+            f"Added to the ATS watchlist ({nom_entreprise}). No open posting yet -- its board is "
+            f"checked on every scheduled run; in the meantime this is a spontaneous-application lead."
+        ),
+        url=None,
+    )
+    persisted = persist_adhoc_offers([lead])
+    if not persisted:
+        return message  # watchlist add still succeeded; nothing further to report
+
+    offer_id = persisted[0]["id"]
+    contacts = rechercher_contacts_entreprise.invoke({"entreprise": nom_entreprise, "offer_id": offer_id})
+    return f"{message}\n\nSpontaneous-application lead created (#{offer_id}).\n\n{contacts}"
+
+
+@tool
+def retirer_entreprise_suivie(nom_entreprise: str) -> str:
+    """Removes a company from the ATS watchlist (surveiller_entreprise) --
+    its board stops being checked on future discovery runs. Postings already
+    found from it stay in the database untouched, same as excluding a
+    posting doesn't delete it."""
+    from core.ats_watchlist import remove_company
+    return f'No longer watching "{nom_entreprise}".' if remove_company(nom_entreprise) else \
+        f'"{nom_entreprise}" wasn\'t on the watchlist (check lister_entreprises_suivies for the exact name).'
+
+
+@tool
+def lister_entreprises_suivies() -> str:
+    """Lists every company on the ATS watchlist (surveiller_entreprise) --
+    which platform (Greenhouse/Ashby/Lever) each one resolved to and when it
+    was added."""
+    from core.ats_watchlist import list_companies
+    companies = list_companies()
+    if not companies:
+        return "No company on the ATS watchlist yet. Add one with surveiller_entreprise."
+    return "\n".join(
+        f"{c['company']} ({c['platform']}/{c['slug']}, added {c['added_at']})" for c in companies
+    )
+
+
+@tool
+def verifier_actus_levees_de_fonds() -> str:
+    """Runs the Maddyness/Frenchweb funding-news check right now instead of
+    waiting for its own schedule (FUNDING_CHECK_INTERVAL_DAYS, .env) --
+    reads recent French tech-news headlines, and for anything that reads as
+    a specific company raising funding, resolves whether it has a
+    Greenhouse/Ashby/Lever board. This is slow (an LLM call per candidate
+    headline, plus 3 API attempts per one that resolves) and can legitimately
+    return nothing new if nothing's changed since the last run -- don't
+    treat an empty result as failure. Never adds anything to the watchlist
+    on its own; a candidate is proposed via a proactive notification (same
+    as the scheduled run), not returned as this tool's own text, so this
+    always reports how many were checked rather than which ones."""
+    from tools.funding_check import run_funding_check
+    with get_connection() as conn:
+        before = conn.execute(
+            "SELECT id FROM run_log WHERE run_type = 'funding_check' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    run_funding_check()
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT n_found, n_new FROM run_log WHERE run_type = 'funding_check' "
+            "AND (? IS NULL OR id != ?) ORDER BY id DESC LIMIT 1",
+            (before["id"] if before else None, before["id"] if before else -1),
+        ).fetchone()
+    if not row:
+        return "Funding check ran but logged nothing -- check the daemon logs."
+    if row["n_new"] == 0:
+        return f"Checked {row['n_found']} funding headline(s), nothing new to propose."
+    return (f"Checked {row['n_found']} funding headline(s), proposed {row['n_new']} "
+            f"compan{'y' if row['n_new'] == 1 else 'ies'} -- see the notification for names "
+            f"(dernieres_notifications, or check Discord/desktop).")
 
 
 @tool
@@ -975,6 +1091,8 @@ TOOLS = [
     rechercher_offres, chercher_offres_maintenant, strategie_recherche, journal_recherches,
     dernieres_notifications, mes_candidatures, details_offre,
     description_complete_offre, rechercher_entreprise, quotas_api_restants, rechercher_contacts_entreprise,
+    surveiller_entreprise, retirer_entreprise_suivie, lister_entreprises_suivies,
+    verifier_actus_levees_de_fonds,
     profil_candidat,
     definir_profil, modifier_profil, statut_veille, sauvegarder_lettre_motivation, adapter_cv, lire_lettre_motivation,
     marquer_postule, annuler_postule, exclure_offre, inclure_offre, repartition_scores, funnel_conversion,

@@ -111,6 +111,8 @@ class OfferDetailScreen(ModalScreen[str | None]):
     def refresh_detail(self) -> None:
         from core import queries
         from tools import common
+        from tools.ats_check import check_ats_readable
+        from tools.ghost_job import check_ghost_job
 
         row, has_dossier = queries.get_offer_detail(self.offer_id)
         content = self.query_one("#offer-detail-content", Static)
@@ -129,6 +131,9 @@ class OfferDetailScreen(ModalScreen[str | None]):
             f"Last seen: {row['last_seen_at']}",
             f"URL: {row['url'] or '(none)'}",
         ]
+        is_ghost, ghost_reason = check_ghost_job(row["description"], row["first_seen_at"])
+        if is_ghost:
+            lines.append(f"Warning: {ghost_reason}")
         if row["score_reason"]:
             lines += ["", "Score reason:", row["score_reason"]]
         lines += ["", "Description:", row["description"] or "(none)"]
@@ -143,6 +148,13 @@ class OfferDetailScreen(ModalScreen[str | None]):
         self._letter_text = letter_text
         if letter_text:
             lines += ["", "Cover letter:", letter_text]
+            ok, reason = check_ats_readable(Path(self._files_row["cover_letter_path"]))
+            if not ok:
+                lines.append(f"Warning: letter PDF may not be ATS-readable ({reason})")
+        if self._files_row and self._files_row["cv_path"]:
+            ok, reason = check_ats_readable(Path(self._files_row["cv_path"]))
+            if not ok:
+                lines += ["", f"Warning: tailored CV PDF may not be ATS-readable ({reason})"]
 
         content.update("\n".join(str(x) for x in lines))
         self.query_one("#open-letter", Button).disabled = not (self._files_row and self._files_row["cover_letter_path"])
@@ -202,6 +214,15 @@ class OfferDetailScreen(ModalScreen[str | None]):
         self.refresh_detail()
 
     def _tailor_cv(self) -> None:
+        # An LLM call plus, for a .docx profile, a LibreOffice subprocess
+        # conversion (tools/cv_tailor.py) -- run off the UI thread so the
+        # rest of the app (other panes, input) stays responsive for however
+        # long that takes, same reasoning tui/panes/chat.py's _send() and
+        # tui/panes/status.py's digest worker already document.
+        self.notify("Tailoring CV...", timeout=3)
+        self.run_worker(self._tailor_cv_worker, thread=True, exclusive=True)
+
+    def _tailor_cv_worker(self) -> None:
         from core.db import get_connection
         from tools import common
         from tools.cv_tailor import tailor_cv
@@ -215,8 +236,10 @@ class OfferDetailScreen(ModalScreen[str | None]):
         if path is not None:
             with get_connection() as conn:
                 common.upsert_application(conn, self.offer_id, defaults={"status": "draft"}, cv_path=str(path))
-        self._changed = True
-        self.refresh_detail()
+            self._changed = True
+        else:
+            self.app.call_from_thread(self.notify, "CV tailoring failed -- check the daemon logs.", severity="error")
+        self.app.call_from_thread(self.refresh_detail)
 
     def _start_edit(self) -> None:
         editor = self.query_one("#letter-editor", TextArea)

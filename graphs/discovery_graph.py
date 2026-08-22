@@ -1,10 +1,10 @@
 """discovery_graph -- the offer discovery pipeline.
 
-fetch_jobspy / fetch_lba / fetch_adzuna / fetch_francetravail / fetch_labonneboite
+fetch_jobspy / fetch_lba / fetch_adzuna / fetch_francetravail / fetch_labonneboite / fetch_ats
 (parallel) -> dedupe -> persist_new -> score -> draft_letters -> log_run.
 
 JobSpy (scraping, no key required, see tools/sources_jobspy.py) is the only
-source active by default. The other four are official French APIs, each
+source active by default. The next four are official French APIs, each
 individually optional (missing key -> the connector returns an empty list,
 the fetch node logs it and moves on): La Bonne Alternance and France Travail
 "Offres d'emploi v2" (apprenticeship, France only), Adzuna (general-purpose,
@@ -16,6 +16,14 @@ core/profile.py for how that profile gets filled in (a CV or free text
 through chat). La Bonne Alternance/La Bonne Boite search by ROME code
 (LBA_ROME_CODES, .env) rather than a free-text keyword: these are fixed-
 taxonomy APIs, France Travail doesn't support free search.
+
+fetch_ats (tools/sources_ats.py, core/ats_watchlist.py) is the odd one out:
+Greenhouse/Ashby/Lever have no keyword search at all, only a per-company
+feed, so it works off an explicit company list (ATS_WATCHLIST in .env, or
+grown via the surveiller_entreprise/retirer_entreprise_suivie/
+lister_entreprises_suivies chat tools) rather than user_profile -- not
+France-specific, but skews tech/software/startup hiring by nature of what
+uses these three platforms.
 
 Discovery and scoring are two separate steps: dedupe/persist_new save EVERY
 new relevant offer (score=NULL), that's the durable "already seen" memory --
@@ -43,11 +51,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from langgraph.graph import END, START, StateGraph
 
-from core import locations
+from core import ats_watchlist, locations
 from core.circuit_breaker import compute_backoff_until, is_backed_off
 from core.db import get_connection, get_user_profile, init_db
 from core.llm import chat_json
-from tools import sources_adzuna, sources_francetravail, sources_jobspy, sources_labonneboite, sources_lba, web_search
+from tools import (
+    sources_adzuna, sources_ats, sources_francetravail, sources_jobspy,
+    sources_labonneboite, sources_lba, web_search,
+)
 from tools.common import normalize_text
 from tools.discord_style import COLOR_ACTIVE, base_embed
 from tools.notify_tools import notify_all
@@ -67,7 +78,7 @@ LBA_ROME_CODES = os.environ.get("LBA_ROME_CODES", "M1805")
 # Sources currently wired into the scheduled graph -- source of truth for
 # /sources (discord_bot.py), which filters on this so a source no longer
 # fetched never shows up there as if it were still active.
-ACTIVE_DISCOVERY_SOURCES = ("jobspy", "lba", "adzuna", "francetravail", "labonneboite")
+ACTIVE_DISCOVERY_SOURCES = ("jobspy", "lba", "adzuna", "francetravail", "labonneboite", "ats")
 
 # JobSpy and Adzuna only return postings within a recent window (see
 # JOBSPY_HOURS_OLD / ADZUNA_MAX_DAYS_OLD in their own connectors) -- fine once
@@ -274,6 +285,38 @@ def fetch_labonneboite_node(state: DiscoveryState) -> dict:
     except Exception as e:
         _log(f"[fetch] La Bonne Boite -> failed: {e}")
         return {"raw_offers": [], "stats": [{"source": "labonneboite", "n_found": 0, "error": str(e)}]}
+
+
+def fetch_ats_node(state: DiscoveryState) -> dict:
+    """Greenhouse/Ashby/Lever, one call per watched company (core/ats_watchlist.py)
+    -- no keyword search here, see tools/sources_ats.py's module docstring on
+    why. A single company's board failing (moved off that ATS, temporarily
+    down) is logged and skipped, not treated as this whole source failing --
+    only an empty watchlist or every single company failing backs off "ats"
+    as a whole."""
+    backed_off, until = is_backed_off("ats")
+    if backed_off:
+        _log(f"[fetch] ATS watchlist -> backed off until {until}, skipped (not attempted)")
+        return {"raw_offers": [], "stats": []}
+
+    ats_watchlist.ensure_defaults_loaded()
+    companies = ats_watchlist.list_companies()
+    if not companies:
+        return {"raw_offers": [], "stats": []}
+
+    _log(f"[fetch] ATS watchlist ({len(companies)} compan{'y' if len(companies) == 1 else 'ies'})...")
+    offers = []
+    n_failed = 0
+    for c in companies:
+        try:
+            jobs = sources_ats.fetch_company_jobs(c["platform"], c["slug"])
+            offers += [sources_ats.normalize_job(c["platform"], c["company"], j) for j in jobs]
+        except Exception as e:
+            n_failed += 1
+            _log(f"[fetch] ATS watchlist -> {c['company']} ({c['platform']}/{c['slug']}) failed: {e}")
+    _log(f"[fetch] ATS watchlist -> {len(offers)} results ({n_failed} compan{'y' if n_failed == 1 else 'ies'} failed)")
+    error = f"{n_failed}/{len(companies)} companies failed" if n_failed == len(companies) else None
+    return {"raw_offers": offers, "stats": [{"source": "ats", "n_found": len(offers), "error": error}]}
 
 
 def _relevance_keywords(target_roles: list[str]) -> list[str]:
@@ -646,6 +689,19 @@ def draft_letters_node(state: DiscoveryState) -> dict:
 HIGHLIGHT_SCORE_THRESHOLD = int(os.environ.get("DISCOVERY_HIGHLIGHT_SCORE", "70"))
 
 
+def _n_new_for_stat_source(n_new_by_source: dict, source: str) -> int:
+    """n_new_by_source (built by persist_new_node) is keyed by the exact,
+    fine-grained value each offer's own `source` column got --
+    "jobspy_indeed"/"jobspy_linkedin", "lba"/"lba_recruiter",
+    "ats_greenhouse"/"ats_ashby"/"ats_lever" -- never the coarser label a
+    fetch node's own stats use ("jobspy", "lba", "ats"). A plain dict lookup
+    by that coarser label was silently always 0 whenever a source splits
+    into sub-labels this way (caught while adding the "ats" source, which
+    inherits the same split jobspy/lba already had) -- sum every key that
+    either matches exactly or is that label's own sub-label instead."""
+    return sum(n for key, n in n_new_by_source.items() if key == source or key.startswith(source + "_"))
+
+
 def log_run_node(state: DiscoveryState) -> dict:
     n_new_by_source = state.get("n_new_by_source", {})
     with get_connection() as conn:
@@ -657,7 +713,7 @@ def log_run_node(state: DiscoveryState) -> dict:
             conn.execute(
                 """INSERT INTO run_log (run_type, source, finished_at, n_found, n_new, errors, backoff_until, query)
                    VALUES ('discovery', ?, datetime('now'), ?, ?, ?, ?, ?)""",
-                (stat["source"], stat.get("n_found", 0), n_new_by_source.get(stat["source"], 0),
+                (stat["source"], stat.get("n_found", 0), _n_new_for_stat_source(n_new_by_source, stat["source"]),
                  error, backoff_until, stat.get("query")),
             )
 
@@ -724,13 +780,14 @@ def build_graph():
     graph.add_node("fetch_adzuna", fetch_adzuna_node)
     graph.add_node("fetch_francetravail", fetch_francetravail_node)
     graph.add_node("fetch_labonneboite", fetch_labonneboite_node)
+    graph.add_node("fetch_ats", fetch_ats_node)
     graph.add_node("dedupe", dedupe_node)
     graph.add_node("persist_new", persist_new_node)
     graph.add_node("score", score_node)
     graph.add_node("draft_letters", draft_letters_node)
     graph.add_node("log_run", log_run_node)
 
-    for fetch_node in ("fetch_jobspy", "fetch_lba", "fetch_adzuna", "fetch_francetravail", "fetch_labonneboite"):
+    for fetch_node in ("fetch_jobspy", "fetch_lba", "fetch_adzuna", "fetch_francetravail", "fetch_labonneboite", "fetch_ats"):
         graph.add_edge(START, fetch_node)
         graph.add_edge(fetch_node, "dedupe")
     graph.add_edge("dedupe", "persist_new")

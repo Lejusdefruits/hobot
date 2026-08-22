@@ -14,7 +14,10 @@ a drop-in alternative if you'd rather not run a model locally.
 [Base install](#base-install) &middot;
 [Job sources](#job-sources-and-search-coverage) &middot;
 [French job sources](#french-job-sources-optional) &middot;
+[ATS watchlist](#ats-watchlist-optional) &middot;
+[Funding-news leads](#funding-news-leads-optional) &middot;
 [CV tailoring](#cv-tailoring-optional) &middot;
+[Quality checks](#quality-checks) &middot;
 [Mail monitoring](#mail-monitoring-optional) &middot;
 [Web search & contacts](#web-search-and-company-contacts-optional) &middot;
 [Terminal UI](#terminal-ui) &middot;
@@ -79,6 +82,8 @@ manager or installer.
 - **Checks that postings are still live**: one that's disappeared from the
   source site (position filled, listing pulled) gets flagged and dropped
   instead of sitting in the list looking just as valid as everything else.
+- **Flags likely ghost jobs and unreadable generated PDFs** -- see
+  [Quality checks](#quality-checks) below.
 - **Runs from Discord and/or a terminal UI**: `/status`, `/offers`,
   `/offer <id>`, `/applied`, `/funnel` (where things stall in the application
   process), `/pause`, `/resume`, and `/ask "<anything>"` for everything else:
@@ -123,6 +128,8 @@ stays off, nothing breaks.
 | French source, any contract type (filterable) | No | France Travail "Offres d'emploi v2" — **France only**, free |
 | General-purpose, multi-country source | No | Adzuna — free up to 2500 calls/month |
 | Spontaneous-application leads (France) | No | La Bonne Boite — **needs manual approval from France Travail**, not active on credentials alone |
+| Tech-company career pages (any country) | No | Greenhouse/Ashby/Lever — free, but needs `ATS_WATCHLIST` (or chat) to name companies, no keyword search |
+| Funding-news leads for the ATS watchlist | No | Nothing extra -- free RSS, proposes companies, never adds one on its own |
 | Mail monitoring (reading + draft replies) | No | One or more Gmail accounts |
 | Web search for sharper letters/contacts | No | Self-hosted SearXNG (docker, free) |
 | Company contacts (legal representatives) | No | Pappers — **France only** |
@@ -332,6 +339,79 @@ requires a manual approval on their end on top of the subscription for this
 particular API; until it's granted, this source just stays inactive without
 blocking anything else (the bot handles that on its own, no error surfaces).
 
+## ATS watchlist (optional)
+
+Not France-specific, and fundamentally different from every other source
+above: no keyword search. Greenhouse, Ashby, and Lever (the three ATS
+platforms behind a lot of tech-company career pages) each expose a free,
+unauthenticated JSON feed of a single company's current openings, keyed by
+that company's own "board slug" -- there's no "search every company on
+Greenhouse" endpoint, only "this one company's board." So this source works
+off an explicit list of companies (`core/ats_watchlist.py`) instead of your
+profile's target roles/locations.
+
+Two ways onto that list:
+
+```bash
+ATS_WATCHLIST=GitLab,Anthropic,Ramp
+```
+
+in `.env` (company names -- resolved to a working board on first use and
+cached from then on), and, for growing the list afterward without editing
+files, three chat tools reachable through `/ask`: `surveiller_entreprise`
+("watch Anthropic"), `retirer_entreprise_suivie`, and
+`lister_entreprises_suivies`.
+
+Resolution is best-effort: a company name gets tried against all three
+platforms under a few common spelling conventions (lowercase, hyphenated, no
+spaces). If none of those match, that's reported plainly rather than
+guessed at -- pass the company's exact slug from its careers page URL
+instead if you already know it uses one of these three
+(`boards.greenhouse.io/THIS-PART`, `jobs.ashbyhq.com/THIS-PART`,
+`jobs.lever.co/THIS-PART`).
+
+`surveiller_entreprise` does one more thing on success: it also creates a
+spontaneous-application lead for that company (same idea as La Bonne
+Alternance/La Bonne Boite's recruiter leads -- a placeholder posting for a
+company with no open role yet, tagged `ats_lead`) and immediately looks up a
+contact for it (Pappers + web search first, Hunter.io/Snov.io only as their
+own existing fallback for a verified email -- same priority order as asking
+for a company's contacts by hand, nothing changed there). The lead shows up
+in `/offers` like any other posting, gets picked up by the next scheduled
+run for scoring, and an automatic cover letter if it scores well -- nothing
+extra to do for that part.
+
+Worth knowing before adding a long list of companies: these three platforms
+skew heavily toward tech/software/startup hiring -- genuinely useful if
+that's the target role, close to empty otherwise. Postings found this way
+go through the exact same dedup/scoring/letter pipeline as every other
+source, tagged `ats_greenhouse`/`ats_ashby`/`ats_lever` in `/sources` and
+`/log`.
+
+## Funding-news leads (optional)
+
+Grows the ATS watchlist above on its own, without ever adding to it
+silently: every `FUNDING_CHECK_INTERVAL_DAYS` (2 by default), hobot reads
+recent headlines from Maddyness and Frenchweb (free RSS, no key), and for
+anything that reads like a specific company just raised money, checks
+whether that company has a Greenhouse/Ashby/Lever board -- a company that
+just closed a round is a reasonable bet to be hiring soon, even before a
+posting shows up.
+
+A match is **proposed**, never added automatically: a notification (Discord
+and desktop, same as everything else proactive in this project) lists what
+was found, and adding one for real is one message away --
+`"surveille <company>"` through `/ask`, same as adding any other company by
+hand. Nothing here writes to the watchlist on its own.
+
+`verifier_actus_levees_de_fonds` (through `/ask`) runs the check on demand
+instead of waiting for its schedule -- slow (an LLM call per candidate
+headline), and an empty result most of the time is normal, not a failure:
+of 18 real headlines checked while building this, 6 turned out to be a
+specific company with a real board on one of the three platforms, the rest
+were either opinion pieces/retrospectives (no specific company) or a
+company not on Greenhouse/Ashby/Lever.
+
 ## CV tailoring (optional)
 
 Needs a CV uploaded via `/profile` first (see step 5 above). Once you have
@@ -367,6 +447,38 @@ What that promise actually depends on is your CV's own file:
   flagged as a partial edit wherever it's mentioned, not silently blended in
   with the other case. If you'd rather have full fidelity, re-exporting your
   CV with text kept intact (or as a `.docx`) sidesteps this entirely.
+
+## Quality checks
+
+Two advisory checks, on by default, that never change what happens to a
+posting or a generated file -- they add a warning where you'd already be
+looking, nothing more:
+
+**Possible ghost jobs** (`tools/ghost_job.py`): a posting flagged when it's
+been open for a while with no sign of actually filling
+(`GHOST_JOB_DAYS_THRESHOLD`, default 45 days) and/or its own text uses the
+stock phrasing a company reaches for when a listing isn't tied to a current
+opening ("keep your CV on file", "talent pool", "always accepting
+applications", and a few equivalents in French). Either signal alone is
+enough to flag -- shown as a "Ghost?" column in the terminal UI's Offers
+tab, a warning line on the offer detail screen and in Discord's
+`/offers`/`/offer`, and mentioned to the chat agent so `/ask` brings it up
+before drafting anything for that posting. Neither signal is proof by
+itself: a slow, legitimate hiring process can take 45+ days too. Treat it
+as "worth a second look before spending time on this one," not a verdict --
+nothing gets excluded or hidden because of it.
+
+**ATS-readability check** (`tools/ats_check.py`): after generating a cover
+letter or a tailored CV, hobot re-opens the PDF it just wrote and tries to
+extract its text back out, the same way an Applicant Tracking System's own
+scanner would -- catching the case where a document looks right on screen
+but an ATS would see little or nothing (an image-only render, a font
+substitution that silently failed). A failure logs a warning and shows up
+as a note on the offer detail screen next to the file in question; it never
+blocks the file from being saved; a low character count is the only
+signal, so a deliberately partial edit (the CV tailoring section above,
+"fully flattened CV" case) is not mistaken for a failure -- only whichever
+document was actually generated stays that low.
 
 ## Mail monitoring (optional)
 
@@ -584,12 +696,13 @@ set of tools in plain language:
 specific posting or run a live search for a city/keyword outside your usual
 coverage, give the full detail on a posting, write or review a cover letter,
 tailor your CV for a specific offer, look up a company's contacts (officers,
-verified emails), exclude or re-include a posting, show or edit your
-profile, give the score breakdown across all postings, list applications
-already sent, list pending mail drafts, report how many sends are left for
-the day, and create/edit/delete a draft reply. One plain-language sentence
-is enough, no need to know a tool's exact name for the agent to pick the
-right one.
+verified emails), add or remove a company from the ATS watchlist or run the
+funding-news check on demand (see above), exclude or re-include a posting,
+show or edit your profile, give the score breakdown across all postings,
+list applications already sent, list pending mail drafts, report how many
+sends are left for the day, and create/edit/delete a draft reply. One
+plain-language sentence is enough, no need to know a tool's exact name for
+the agent to pick the right one.
 
 ## Architecture
 
@@ -599,7 +712,7 @@ cli.py                — terminal UI entry point (its own separate process, see
 setup.sh, setup.ps1  — base install (venv, dependencies, .env) for Linux/macOS and Windows
 systemd/, launchd/    — background-service unit files, see "Running it continuously"
 graphs/
-  discovery_graph.py  — fetch (JobSpy + French sources) -> dedup -> score (LLM) -> letters -> log
+  discovery_graph.py  — fetch (JobSpy + French sources + ATS watchlist) -> dedup -> score (LLM) -> letters -> log
   email_graph.py      — fetch mail -> classify (LLM) -> draft replies
   chat_agent.py        — the agent behind /ask and the terminal UI's Chat pane (ReAct, tool-calling,
                           persistent SqliteSaver memory shared between both interfaces)
@@ -613,14 +726,20 @@ core/
   locations.py         — French city registry -> coordinates/INSEE code (optional)
   france_travail_auth.py — shared OAuth2 for the France Travail Connect APIs (optional)
   api_usage.py        — monthly quota tracking (Adzuna, Hunter.io, Snov.io)
+  ats_watchlist.py    — the company list tools/sources_ats.py checks (optional)
 tools/
   sources_jobspy.py   — discovery connector (no key required)
   sources_lba.py, sources_adzuna.py, sources_francetravail.py,
   sources_labonneboite.py — French sources (optional, see table above)
+  sources_ats.py      — Greenhouse/Ashby/Lever connector, per-company (optional, see table above)
+  sources_funding_news.py — Maddyness/Frenchweb RSS, feeds the ATS watchlist (optional)
+  funding_check.py    — turns a funding headline into a watchlist proposal (optional)
   sources_pappers.py, sources_hunter.py, sources_snov.py — contacts (optional)
   web_search.py       — SearXNG (optional)
   email_tools.py      — IMAP/SMTP (optional)
   link_check.py       — flags postings whose link has died
+  ghost_job.py        — flags a posting that looks like it may not be a real, current opening
+  ats_check.py        — verifies a generated PDF's text is actually extractable
   documents.py        — renders cover letters to PDF
   cv_tailor.py        — edits your own uploaded CV in place, per offer (optional)
   discord_bot.py       — slash commands + bridge to the agent (optional interface)

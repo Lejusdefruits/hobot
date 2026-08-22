@@ -10,6 +10,7 @@ langchain-openai/langchain-anthropic installed at all -- a hard top-level
 import of either would turn an optional feature into a mandatory dependency.
 """
 import os
+from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -30,7 +31,20 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
 
 
+@lru_cache(maxsize=None)
 def get_chat_model(temperature: float = 0.1) -> BaseChatModel:
+    """Cached per temperature (the only thing that varies call to call --
+    provider/model/host/key are all fixed for the process's lifetime, read
+    from .env once above): a discovery run can call this dozens of times
+    scoring offers, and building a fresh ChatOpenAI/ChatAnthropic/ChatOllama
+    each time discarded connection pooling for no reason -- these are
+    stateless, thread-safe request builders (LLM_MAX_CONCURRENT already caps
+    how many calls run at once), safe to hand out the same instance
+    repeatedly."""
+    return _build_chat_model(temperature)
+
+
+def _build_chat_model(temperature: float) -> BaseChatModel:
     if LLM_PROVIDER == "ollama":
         from langchain_ollama import ChatOllama
         return ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_HOST, temperature=temperature)

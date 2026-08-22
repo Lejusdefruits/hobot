@@ -27,9 +27,13 @@ def get_status_summary() -> dict:
 
 
 def list_offers(limit: int = 8) -> list:
+    """description and first_seen_at are pulled here (not just id/title/...)
+    so every caller can run tools.ghost_job.check_ghost_job() on each row
+    without a second query per posting."""
     with get_connection() as conn:
         return conn.execute(
             """SELECT o.id, o.title, o.company, o.location, o.score, o.url,
+                      o.description, o.first_seen_at,
                       (a.cover_letter_path IS NOT NULL) AS has_dossier
                FROM offers o LEFT JOIN applications a ON a.offer_id = o.id
                WHERE o.score IS NOT NULL AND o.status NOT IN ('applied', 'excluded', 'expired')
@@ -43,7 +47,7 @@ def get_offer_detail(offer_id: int) -> tuple:
     with get_connection() as conn:
         row = conn.execute(
             "SELECT title, company, location, description, url, score, score_reason, status, "
-            "last_seen_at, source FROM offers WHERE id = ?", (offer_id,),
+            "last_seen_at, first_seen_at, source FROM offers WHERE id = ?", (offer_id,),
         ).fetchone()
         if not row:
             return None, False
@@ -138,7 +142,8 @@ def wipe_database() -> None:
     daemon's already-open connections keep working with no restart needed."""
     with get_connection() as conn:
         for table in ("company_contacts", "applications", "emails", "offers",
-                      "run_log", "api_calls", "notifications", "memory_summaries", "user_profile"):
+                      "run_log", "api_calls", "notifications", "memory_summaries", "user_profile",
+                      "ats_watchlist"):
             conn.execute(f"DELETE FROM {table}")
         conn.execute("DELETE FROM sqlite_sequence")
 

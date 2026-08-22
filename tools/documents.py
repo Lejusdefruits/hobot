@@ -38,6 +38,8 @@ def generate_letter_pdf(offer_id: int, lettre: str, full_name: str | None = None
     path = letter_path(offer_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(pdf_bytes)
+    from tools.ats_check import log_if_not_ats_readable
+    log_if_not_ats_readable(path, context=f"cover letter, offer #{offer_id}")
     return path
 
 

@@ -585,8 +585,12 @@ def tailor_cv(offer_id: int, title: str, description: str) -> Path | None:
         out_dir = OUTPUT_DIR / str(offer_id)
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        from tools.ats_check import log_if_not_ats_readable
+
         if fmt == "docx":
-            return _tailor_docx(profile, title, description, offer_id)
+            result = _tailor_docx(profile, title, description, offer_id)
+            log_if_not_ats_readable(result, context=f"tailored CV (docx), offer #{offer_id}")
+            return result
 
         doc = fitz.open(profile["cv_source_path"])
         try:
@@ -599,6 +603,7 @@ def tailor_cv(offer_id: int, title: str, description: str) -> Path | None:
                 return None
             out_path = cv_path(offer_id)
             doc.save(str(out_path))
+            log_if_not_ats_readable(out_path, context=f"tailored CV ({fmt}), offer #{offer_id}")
             return out_path
         finally:
             doc.close()

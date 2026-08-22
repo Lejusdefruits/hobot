@@ -127,7 +127,7 @@ def unarchive_cover_letter(conn: Connection, offer_id: int) -> None:
     _unarchive_column(conn, offer_id, "cv_path")
 
 
-SPONTANEOUS_LEAD_SOURCES = ("lba_recruiter", "labonneboite")
+SPONTANEOUS_LEAD_SOURCES = ("lba_recruiter", "labonneboite", "ats_lead")
 
 # Readable labels for the `source` column -- used by /sources, /log, and
 # strategie_recherche so a raw technical key (e.g. "jobspy") never leaks into
@@ -139,6 +139,11 @@ SOURCE_LABELS = {
     "jobspy": "JobSpy (Indeed)",
     "francetravail": "France Travail",
     "labonneboite": "La Bonne Boite (spontaneous-application lead)",
+    "ats": "ATS watchlist (Greenhouse/Ashby/Lever)",
+    "ats_greenhouse": "ATS watchlist (Greenhouse)",
+    "ats_ashby": "ATS watchlist (Ashby)",
+    "ats_lever": "ATS watchlist (Lever)",
+    "ats_lead": "ATS watchlist (spontaneous-application lead)",
 }
 
 

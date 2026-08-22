@@ -156,6 +156,20 @@ CREATE TABLE IF NOT EXISTS daemon_flags (
     id      INTEGER PRIMARY KEY CHECK (id = 1),
     paused  INTEGER NOT NULL DEFAULT 0
 );
+
+-- Companies tools/sources_ats.py checks for Greenhouse/Ashby/Lever openings
+-- -- see core/ats_watchlist.py. Unlike every other source in this project,
+-- these three ATS platforms have no keyword search, only a per-company feed,
+-- so this table (not user_profile.target_roles) is what tells that connector
+-- what to fetch.
+CREATE TABLE IF NOT EXISTS ats_watchlist (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    company     TEXT NOT NULL,
+    platform    TEXT NOT NULL,
+    slug        TEXT NOT NULL,
+    added_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(platform, slug)
+);
 """
 
 

@@ -145,8 +145,13 @@ class StatusPane(VerticalScroll):
 
     def _run_digest_worker(self) -> None:
         import daemon as daemon_module
-        text = daemon_module._run_weekly_digest()
-        if text is None:
+        status, text = daemon_module._run_weekly_digest()
+        if status == "failed":
+            self.app.call_from_thread(
+                self.notify, "Digest failed -- check the daemon logs.", severity="error",
+            )
+            return
+        if status == "nothing":
             self.app.call_from_thread(self.notify, "Nothing to report this week -- no digest sent.")
             return
         self.app.call_from_thread(self._show_digest, text, "just now")

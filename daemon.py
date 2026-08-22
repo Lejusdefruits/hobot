@@ -50,6 +50,7 @@ EMAIL_JITTER_MIN = int(os.environ.get("EMAIL_POLL_JITTER_MIN", "5"))
 WEEKLY_DIGEST_DAY = os.environ.get("WEEKLY_DIGEST_DAY", "mon")
 WEEKLY_DIGEST_HOUR = int(os.environ.get("WEEKLY_DIGEST_HOUR", "9"))
 STALE_DRAFT_DAYS = int(os.environ.get("STALE_DRAFT_DAYS", "5"))
+FUNDING_CHECK_INTERVAL_DAYS = int(os.environ.get("FUNDING_CHECK_INTERVAL_DAYS", "2"))
 
 scheduler = BackgroundScheduler()
 
@@ -182,22 +183,26 @@ def _build_weekly_digest() -> dict | None:
     }
 
 
-def _run_weekly_digest() -> str | None:
+def _run_weekly_digest() -> tuple[str, str | None]:
     """Weekly summary -- not subject to the /pause kill switch: this isn't a
     call to an external source (so no anti-ban concern), just a local
     database read + a Discord message, and the user will probably still want
     to receive it even with active discovery paused for a while.
 
-    Returns the digest text (None if there was nothing to report, or the
-    build failed) -- the scheduled job ignores it, but the terminal UI's
-    on-demand button uses it to show what was just sent, right there in the
-    interface, instead of only as a Discord/desktop notification."""
+    Returns (status, text): status is "sent", "nothing" (nothing to report
+    this week), or "failed" (see the daemon log for the traceback); text is
+    the digest body on "sent", None otherwise. The scheduled job and
+    Discord's /digest both ignore this; the terminal UI's on-demand button
+    uses it to tell "nothing happened" apart from "something broke" instead
+    of showing the same reassuring message either way (a plain `None` return
+    couldn't distinguish the two -- caught by the review this project ran
+    on itself, not by a report from actually hitting it)."""
     log.info("=== weekly digest ===")
     try:
         data = _build_weekly_digest()
         if data is None:
             log.info("weekly digest: nothing to report this week, no notification")
-            return None
+            return "nothing", None
 
         n_new, by_source, top = data["n_new"], data["by_source"], data["top"]
         n_applied, n_letters_pending = data["n_applied"], data["n_letters_pending"]
@@ -231,7 +236,7 @@ def _run_weekly_digest() -> str | None:
                 inline=False,
             )
         notify_all("hobot -- weekly digest", data["text"], embed=embed, kind="digest")
-        return data["text"]
+        return "sent", data["text"]
     except Exception:
         log.error("weekly digest failed:\n%s", traceback.format_exc())
         notify_all(
@@ -240,7 +245,7 @@ def _run_weekly_digest() -> str | None:
                               description="Check the daemon logs for details."),
             kind="error",
         )
-        return None
+        return "failed", None
 
 
 def _first_run_at(run_type: str, interval_minutes: int, max_initial_delay_minutes: int) -> datetime:
@@ -311,6 +316,18 @@ def start() -> None:
         _run_weekly_digest, "cron",
         day_of_week=WEEKLY_DIGEST_DAY, hour=WEEKLY_DIGEST_HOUR,
         id="weekly_digest", max_instances=1, coalesce=True,
+    )
+
+    from tools.funding_check import run_funding_check
+    funding_first_run = _first_run_at(
+        "funding_check", FUNDING_CHECK_INTERVAL_DAYS * 24 * 60, min(FUNDING_CHECK_INTERVAL_DAYS * 24 * 60, 60),
+    )
+    log.info("First funding-news check scheduled: %s", funding_first_run)
+    scheduler.add_job(
+        run_funding_check, "interval",
+        days=FUNDING_CHECK_INTERVAL_DAYS, jitter=6 * 3600,
+        next_run_time=funding_first_run,
+        id="funding_check", max_instances=1, coalesce=True,
     )
     scheduler.start()
     daemon_state.scheduler = scheduler  # published for /status and the agent's statut_veille tool

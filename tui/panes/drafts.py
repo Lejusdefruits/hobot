@@ -1,19 +1,21 @@
 """Gmail drafts -- mirrors the web dashboard's /drafts: same
 tools.email_tools calls and the same daily anti-ban send cap check as
-/drafts and its SendDraftButton/DeleteDraftButton on Discord. Both send and
-delete go through a confirmation modal first -- irreversible IMAP-side
-actions, same reasoning as the offer detail screen's mark-applied not
-needing one (that's a local DB flip) versus this (a real email leaves the
-outbox, or a draft is gone for good)."""
-import os
-
+/drafts and its SendDraftButton/DeleteDraftButton on Discord --
+tools.email_tools.send_existing_draft_with_cap() is the shared function
+both this pane and SendDraftButton call, so the cap logic itself only lives
+in one place (it used to be copied here independently, a real drift risk a
+review caught). Both send and delete go through a confirmation modal first
+-- irreversible IMAP-side actions, same reasoning as the offer detail
+screen's mark-applied not needing one (that's a local DB flip) versus this
+(a real email leaves the outbox, or a draft is gone for good). Both also run
+in a worker thread, not on the UI thread directly -- IMAP over the network
+is exactly the kind of blocking call that would otherwise freeze the whole
+app for its duration, same reasoning tui/panes/chat.py's _send() documents."""
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Button, DataTable, Static
 
 from tui.modals import ConfirmModal
-
-GMAIL_DAILY_SEND_CAP = int(os.environ.get("GMAIL_DAILY_SEND_CAP", "15"))
 
 
 class DraftsPane(Vertical):
@@ -81,28 +83,18 @@ class DraftsPane(Vertical):
         )
 
     def _do_send(self, uid: str) -> None:
-        from core.db import get_connection
-        from tools import email_tools
+        self.run_worker(lambda: self._send_worker(uid), thread=True, exclusive=True)
 
-        with get_connection() as conn:
-            sent_today = conn.execute(
-                "SELECT COUNT(*) c FROM run_log WHERE run_type='email_send' AND date(started_at) = date('now')"
-            ).fetchone()["c"]
-        if sent_today >= GMAIL_DAILY_SEND_CAP:
-            self.notify(f"Daily send cap reached ({GMAIL_DAILY_SEND_CAP}/day).", severity="warning")
+    def _send_worker(self, uid: str) -> None:
+        from tools.email_tools import send_existing_draft_with_cap
+
+        result = send_existing_draft_with_cap(uid)
+        if result["status"] != "sent":
+            severity = "warning" if result["status"] == "capped" else "error"
+            self.app.call_from_thread(self.notify, result["message"], severity=severity)
             return
-        result = email_tools.envoyer_brouillon_existant(uid)
-        if result.startswith("Error") or result.startswith("No draft"):
-            self.notify(result, severity="error")
-            return
-        with get_connection() as conn:
-            conn.execute(
-                "INSERT INTO run_log (run_type, source, started_at, finished_at, n_found, n_new) "
-                "VALUES ('email_send', ?, datetime('now'), datetime('now'), 1, 1)",
-                (email_tools.SEND_ACCOUNT,),
-            )
-        self.notify("Draft sent.")
-        self.refresh_drafts()
+        self.app.call_from_thread(self.notify, "Draft sent.")
+        self.app.call_from_thread(self.refresh_drafts)
 
     def _confirm_delete(self) -> None:
         uid = self._selected_uid()
@@ -119,7 +111,10 @@ class DraftsPane(Vertical):
         )
 
     def _do_delete(self, uid: str) -> None:
+        self.run_worker(lambda: self._delete_worker(uid), thread=True, exclusive=True)
+
+    def _delete_worker(self, uid: str) -> None:
         from tools import email_tools
         email_tools.supprimer_brouillon(uid)
-        self.notify("Draft deleted.")
-        self.refresh_drafts()
+        self.app.call_from_thread(self.notify, "Draft deleted.")
+        self.app.call_from_thread(self.refresh_drafts)

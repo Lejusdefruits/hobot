@@ -32,8 +32,7 @@ from graphs.chat_agent import axes_progression as axes_progression_tool
 from graphs.chat_agent import execute_pending_send, wipe_memory
 from tools import common, email_tools
 from tools.discord_style import COLOR_ACTIVE, COLOR_DEFAULT, COLOR_ERROR, COLOR_PAUSED, base_embed
-
-GMAIL_DAILY_SEND_CAP = int(os.environ.get("GMAIL_DAILY_SEND_CAP", "15"))
+from tools.ghost_job import check_ghost_job
 
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 _channel_id_raw = os.environ.get("DISCORD_CHANNEL_ID")
@@ -278,6 +277,9 @@ async def offers(interaction: discord.Interaction):
             value += f" — {r['location']}"
         if r["has_dossier"]:
             value += "\nCV + letter already ready (`/files`)"
+        is_ghost, ghost_reason = check_ghost_job(r["description"], r["first_seen_at"])
+        if is_ghost:
+            value += f"\n{ghost_reason}"
         if r["url"]:
             value += f"\n[View posting]({r['url']})"
         embed.add_field(name=name, value=value[:1024], inline=False)
@@ -441,6 +443,9 @@ async def offer_cmd(interaction: discord.Interaction, offer_id: int):
     if row["score"] is not None:
         embed.add_field(name="Score", value=f"{row['score']}/100", inline=True)
     embed.add_field(name="Last seen live", value=row["last_seen_at"] or "?", inline=True)
+    is_ghost, ghost_reason = check_ghost_job(row["description"], row["first_seen_at"])
+    if is_ghost:
+        embed.add_field(name="Warning", value=ghost_reason, inline=False)
     if row["score_reason"]:
         embed.add_field(name="Reasoning", value=row["score_reason"][:1024], inline=False)
     if row["description"]:
@@ -618,40 +623,25 @@ class SendDraftButton(discord.ui.Button):
     """/drafts' "Send" button -- sends the draft as-is (email_tools.
     envoyer_brouillon_existant re-reads its FULL content, the embed's preview
     is truncated to 200 characters) then deletes it from the Drafts folder.
-    Respects the same daily anti-ban cap as ConfirmSendView above -- otherwise
-    it could be used to bypass that cap by resending from an already-written
-    draft over and over."""
+    Respects the same daily anti-ban cap as ConfirmSendView above, via
+    tools.email_tools.send_existing_draft_with_cap() -- the terminal UI's
+    Drafts pane (tui/panes/drafts.py) calls the exact same function, so the
+    cap-check-then-log sequence only lives in one place (it used to be
+    copied here independently, a real drift risk a review caught)."""
 
     def __init__(self, uid: str):
         super().__init__(label="Send", style=discord.ButtonStyle.success)
         self.uid = uid
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        with get_connection() as conn:
-            sent_today = conn.execute(
-                "SELECT COUNT(*) c FROM run_log WHERE run_type='email_send' AND date(started_at) = date('now')"
-            ).fetchone()["c"]
-        if sent_today >= GMAIL_DAILY_SEND_CAP:
-            await interaction.response.send_message(
-                f"Daily cap of {GMAIL_DAILY_SEND_CAP} sends reached -- the draft stays pending, try again tomorrow.",
-                ephemeral=True,
-            )
-            return
         await interaction.response.defer(ephemeral=True, thinking=True)
         result = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: email_tools.envoyer_brouillon_existant(self.uid)
+            None, lambda: email_tools.send_existing_draft_with_cap(self.uid)
         )
-        failed = result.startswith("Error") or result.startswith("No draft")
-        if not failed:
-            with get_connection() as conn:
-                conn.execute(
-                    "INSERT INTO run_log (run_type, source, started_at, finished_at, n_found, n_new) "
-                    "VALUES ('email_send', ?, datetime('now'), datetime('now'), 1, 1)",
-                    (email_tools.SEND_ACCOUNT,),
-                )
+        if result["status"] == "sent":
             _disable_draft_buttons(self.view, self.uid)
             await interaction.message.edit(view=self.view)
-        await interaction.followup.send(result, ephemeral=True)
+        await interaction.followup.send(result["message"], ephemeral=True)
 
 
 class DeleteDraftButton(discord.ui.Button):

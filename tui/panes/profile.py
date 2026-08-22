@@ -57,8 +57,6 @@ class ProfilePane(Vertical):
     def _upload_cv(self, path_str: str) -> None:
         from pathlib import Path
 
-        from core import profile as profile_mod
-
         path = Path(path_str).expanduser()
         error_widget = self.query_one("#profile-error", Static)
         if path.suffix.lower() not in (".pdf", ".docx"):
@@ -67,14 +65,24 @@ class ProfilePane(Vertical):
         if not path.exists():
             error_widget.update(f"No such file: {path}")
             return
+        error_widget.update("")
+        # parse_cv is an LLM call (vision-based for an image-only CV) -- run
+        # off the UI thread so the rest of the app stays responsive for
+        # however long that takes, same reasoning tui/panes/chat.py's
+        # _send() and tui/modals.py's CV-tailoring worker already document.
+        self.notify("Reading CV...", timeout=3)
+        self.run_worker(lambda: self._upload_cv_worker(path), thread=True, exclusive=True)
+
+    def _upload_cv_worker(self, path) -> None:
+        from core import profile as profile_mod
+
         try:
             fmt = profile_mod.detect_format(path)
             parsed = profile_mod.parse_cv(path, fmt=fmt)
             profile_mod.save_profile(parsed)
             profile_mod.save_profile_source(path, fmt)
         except Exception as e:
-            error_widget.update(f"Could not read that CV: {e}")
+            self.app.call_from_thread(self.query_one("#profile-error", Static).update, f"Could not read that CV: {e}")
             return
-        error_widget.update("")
-        self.notify("Profile updated from CV.")
-        self.refresh_profile()
+        self.app.call_from_thread(self.notify, "Profile updated from CV.")
+        self.app.call_from_thread(self.refresh_profile)

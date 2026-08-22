@@ -262,6 +262,45 @@ def envoyer_brouillon_existant(uid: str, email_compte: str = None) -> str:
     return envoi
 
 
+GMAIL_DAILY_SEND_CAP = int(os.environ.get("GMAIL_DAILY_SEND_CAP", "15"))
+
+
+def send_existing_draft_with_cap(uid: str, email_compte: str = None) -> dict:
+    """envoyer_brouillon_existant(), behind the same daily anti-ban cap check
+    every other send path in this project respects -- pulled out into one
+    place shared by Discord's SendDraftButton and the terminal UI's Drafts
+    pane (tui/panes/drafts.py) after those two ended up with independent
+    copies of this exact check-then-log sequence (a real inconsistency risk:
+    a future change to the cap logic applied to one and not the other would
+    silently let one interface bypass or misapply it while the other still
+    enforced it correctly). Returns {"status": "capped" | "failed" | "sent",
+    "message": str} -- no interface-specific content, each caller maps
+    `status` to its own visual treatment, same convention as
+    graphs/chat_agent.py::execute_pending_send."""
+    from core.db import get_connection
+
+    with get_connection() as conn:
+        sent_today = conn.execute(
+            "SELECT COUNT(*) c FROM run_log WHERE run_type='email_send' AND date(started_at) = date('now')"
+        ).fetchone()["c"]
+    if sent_today >= GMAIL_DAILY_SEND_CAP:
+        return {
+            "status": "capped",
+            "message": f"Daily cap of {GMAIL_DAILY_SEND_CAP} sends reached -- the draft stays pending, try again tomorrow.",
+        }
+
+    result = envoyer_brouillon_existant(uid, email_compte)
+    failed = result.startswith("Error") or result.startswith("No draft")
+    if not failed:
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO run_log (run_type, source, started_at, finished_at, n_found, n_new) "
+                "VALUES ('email_send', ?, datetime('now'), datetime('now'), 1, 1)",
+                (email_compte or SEND_ACCOUNT,),
+            )
+    return {"status": "failed" if failed else "sent", "message": result}
+
+
 def tester_les_comptes() -> None:
     print("\n" + "=" * 50)
     print(" STARTING GMAIL ACCOUNT TESTS ".center(50, "="))
