@@ -57,7 +57,19 @@ class HobotApp(App):
         self.theme = "tokyo-night"
 
     def action_show_tab(self, tab_id: str) -> None:
-        self.query_one(TabbedContent).active = tab_id
+        tabbed_content = self.query_one(TabbedContent)
+        if tabbed_content.active == tab_id:
+            return
+        # Blur first: a focused widget left behind in the pane being hidden
+        # (the Chat tab's input, focused by on_tabbed_content_tab_activated
+        # below, is the one pane here that actually does this) makes Textual
+        # snap `active` right back to reveal it -- silently turning every
+        # F1-F7 press, and arrow-key tab navigation, into a no-op the moment
+        # focus is inside Chat. Clearing focus first lets the switch stick;
+        # on_tabbed_content_tab_activated below re-focuses the chat input on
+        # the way back in, so nothing is lost by clearing it here.
+        self.set_focus(None)
+        tabbed_content.active = tab_id
 
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         # Focusing the chat input as soon as its tab becomes current, not
