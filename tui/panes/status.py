@@ -1,12 +1,22 @@
 """Dashboard pane -- core.queries.get_status_summary(), the pause toggle, an
 on-demand weekly digest (daemon._build_weekly_digest/_run_weekly_digest,
 shown in full below the buttons rather than left to show up flattened into
-a single row of the Notifications report), and the reset danger zone. No
-live scheduler introspection here (see core/daemon_state.py's module
-docstring on why `paused` is DB-backed but `scheduler` isn't) -- "next run"
-is shown as the configured cron window instead of a jittered timestamp,
-which is what these env vars actually guarantee anyway."""
+a single row of the Notifications report), and the reset danger zone.
+
+No LIVE scheduler introspection here (see core/daemon_state.py's module
+docstring on why `paused` is DB-backed but `scheduler` isn't -- that object
+only exists inside daemon.py's own process). "Next run" is still computed,
+just independently: discovery's schedule is an absolute cron window
+(DISCOVERY_HOURS_WEEKDAY/WEEKEND), and apscheduler's own CronTrigger can
+compute the next matching time from that definition alone, no live
+scheduler needed -- daemon.py builds the exact same trigger. Email's
+schedule is a plain interval from the last actual run instead
+(EMAIL_POLL_INTERVAL_MIN after run_log's last email_watch row), which is
+the one already visible from here (a live scheduler wouldn't add anything
+an interval trigger's own next_run_time doesn't already say -- one is a
+config file, not our authority; this DB row *is* the authority)."""
 import os
+from datetime import datetime, timedelta, timezone
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -22,6 +32,32 @@ EMAIL_JITTER_MIN = os.environ.get("EMAIL_POLL_JITTER_MIN", "5")
 WEEKLY_DIGEST_DAY = os.environ.get("WEEKLY_DIGEST_DAY", "mon")
 WEEKLY_DIGEST_HOUR = os.environ.get("WEEKLY_DIGEST_HOUR", "9")
 EMAIL_CONFIGURED = bool(os.environ.get("GMAIL_ACCOUNT_1"))
+
+
+def _next_discovery_run() -> str | None:
+    from apscheduler.triggers.combining import OrTrigger
+    from apscheduler.triggers.cron import CronTrigger
+
+    trigger = OrTrigger([
+        CronTrigger(day_of_week="mon-fri", hour=DISCOVERY_HOURS_WEEKDAY),
+        CronTrigger(day_of_week="sat,sun", hour=DISCOVERY_HOURS_WEEKEND),
+    ])
+    next_time = trigger.get_next_fire_time(None, datetime.now().astimezone())
+    return next_time.strftime("%a %d %b, %H:%M") if next_time else None
+
+
+def _next_email_check(last_finished_at: str | None) -> str:
+    if not last_finished_at:
+        return "shortly after the daemon starts"
+    try:
+        # SQLite's datetime('now') is UTC and naive -- localize explicitly
+        # before adding the interval, or the displayed time is off by the
+        # local UTC offset.
+        last_utc = datetime.fromisoformat(last_finished_at).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return "unknown"
+    next_local = (last_utc + timedelta(minutes=int(EMAIL_INTERVAL_MIN))).astimezone()
+    return next_local.strftime("%H:%M")
 
 
 class StatusPane(VerticalScroll):
@@ -83,8 +119,11 @@ class StatusPane(VerticalScroll):
             discovery_text = "Last run: never\n"
         discovery_text += (
             f"Schedule: weekdays {DISCOVERY_HOURS_WEEKDAY}h, weekends {DISCOVERY_HOURS_WEEKEND}h "
-            f"(+/-{DISCOVERY_JITTER_MIN}min jitter)"
+            f"(+/-{DISCOVERY_JITTER_MIN}min jitter)\n"
         )
+        next_discovery = _next_discovery_run()
+        discovery_text += f"Next run: {next_discovery} (+/-{DISCOVERY_JITTER_MIN}min jitter)" if next_discovery \
+            else "Next run: unknown"
         self.query_one("#discovery-info", Static).update(discovery_text)
 
         if not EMAIL_CONFIGURED:
@@ -93,10 +132,15 @@ class StatusPane(VerticalScroll):
             email_text = (
                 f"Last run: {last_email['finished_at']} "
                 f"({last_email['n_new']} new)\n"
-                f"Schedule: every {EMAIL_INTERVAL_MIN}min (+/-{EMAIL_JITTER_MIN}min jitter)"
+                f"Schedule: every {EMAIL_INTERVAL_MIN}min (+/-{EMAIL_JITTER_MIN}min jitter)\n"
+                f"Next run: ~{_next_email_check(last_email['finished_at'])} "
+                f"(+/-{EMAIL_JITTER_MIN}min jitter)"
             )
         else:
-            email_text = f"Last run: never\nSchedule: every {EMAIL_INTERVAL_MIN}min (+/-{EMAIL_JITTER_MIN}min jitter)"
+            email_text = (
+                f"Last run: never\nSchedule: every {EMAIL_INTERVAL_MIN}min (+/-{EMAIL_JITTER_MIN}min jitter)\n"
+                f"Next run: {_next_email_check(None)}"
+            )
         self.query_one("#email-info", Static).update(email_text)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

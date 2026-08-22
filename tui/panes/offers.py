@@ -102,8 +102,10 @@ class OffersPane(Vertical):
         self.app.call_from_thread(self.refresh_offers)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if self._showing_unscored:
-            return  # nothing to open yet -- no score, no letter, no actions apply
+        # OfferDetailScreen already renders "not scored" for score IS NULL
+        # and every action there (mark applied, exclude, tailor CV...) works
+        # the same regardless of score -- no reason Enter should be a no-op
+        # just because the row came from the unscored view.
         offer_id = int(event.row_key.value)
 
         def handle(result: str | None) -> None:

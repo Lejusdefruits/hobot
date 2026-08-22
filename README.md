@@ -560,10 +560,14 @@ python cli.py
 Seven tabs (`F1`-`F7` to jump between them, or click/Tab through them):
 
 - **Status** -- active/paused, the scoring backlog, the best open posting,
-  last discovery/mail-check runs, and buttons for pause/resume, an on-demand
-  weekly digest, and a reset (wipes everything, asks for confirmation first).
-- **Offers** -- the best-scored open postings; Enter on a row opens the full
-  posting with mark-applied / exclude / tailor-CV / edit-and-save-the-letter
+  last discovery/mail-check runs plus when each is next due (computed from
+  the same cron/interval config the daemon itself schedules from, not a live
+  connection to it -- the terminal UI is its own process, see "Terminal UI"
+  above), and buttons for pause/resume, an on-demand weekly digest, and a
+  reset (wipes everything, asks for confirmation first).
+- **Offers** -- the best-scored open postings; Enter on a row (scored or
+  still waiting to be scored) opens the full posting with mark-applied /
+  exclude / tailor-CV / edit-and-save-the-letter / open-the-original-listing
   actions, same as the equivalent Discord buttons. "Show unscored" swaps the
   same table to the backlog still waiting on a score, oldest first; "Score
   now" scores that backlog immediately instead of waiting for the next

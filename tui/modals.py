@@ -176,11 +176,18 @@ class OfferDetailScreen(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="offer-detail-body"):
             yield Static("Loading...", id="offer-detail-content")
+            # Two rows, not one: seven buttons in a single Horizontal
+            # overflows off-screen on anything narrower than a very wide
+            # terminal -- confirmed directly (Close ends up out of the
+            # clickable area at 120 columns), which is exactly what made
+            # Save/Cancel/Close look broken rather than just unreachable.
             with Horizontal(classes="button-row"):
                 yield Button("Mark applied", id="applied")
                 yield Button("Exclude", id="exclude")
                 yield Button("Tailor CV", id="tailor-cv")
                 yield Button("Edit letter", id="edit-letter")
+            with Horizontal(classes="button-row"):
+                yield Button("Open link", id="open-link")
                 yield Button("Open letter PDF", id="open-letter")
                 yield Button("Open CV PDF", id="open-cv")
                 yield Button("Close", id="close")
@@ -206,6 +213,7 @@ class OfferDetailScreen(ModalScreen[str | None]):
             content.update(f"Posting #{self.offer_id} not found.")
             return
 
+        self._url = row["url"]
         self._files_row = self._offer_files_row() if has_dossier else None
         lines = [
             f"#{self.offer_id} -- {row['title']}",
@@ -243,6 +251,7 @@ class OfferDetailScreen(ModalScreen[str | None]):
                 lines += ["", f"Warning: tailored CV PDF may not be ATS-readable ({reason})"]
 
         content.update("\n".join(str(x) for x in lines))
+        self.query_one("#open-link", Button).disabled = not self._url
         self.query_one("#open-letter", Button).disabled = not (self._files_row and self._files_row["cover_letter_path"])
         self.query_one("#open-cv", Button).disabled = not (self._files_row and self._files_row["cv_path"])
 
@@ -276,6 +285,8 @@ class OfferDetailScreen(ModalScreen[str | None]):
             self._open_file(self._files_row["cover_letter_path"] if self._files_row else None)
         elif bid == "open-cv":
             self._open_file(self._files_row["cv_path"] if self._files_row else None)
+        elif bid == "open-link":
+            self._open_url(self._url)
 
     def _mark_applied(self) -> None:
         from core.db import get_connection
@@ -367,6 +378,16 @@ class OfferDetailScreen(ModalScreen[str | None]):
                 subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self.notify(f"Couldn't open the file: {e}", severity="error")
+
+    def _open_url(self, url: str | None) -> None:
+        if not url:
+            return
+        import webbrowser
+        try:
+            if not webbrowser.open(url):
+                self.notify("Couldn't find a browser to open the link with.", severity="error")
+        except Exception as e:
+            self.notify(f"Couldn't open the link: {e}", severity="error")
 
     def action_close(self) -> None:
         self.dismiss("changed" if self._changed else None)
