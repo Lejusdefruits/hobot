@@ -118,6 +118,47 @@ def chercher_offres_maintenant(mot_cle: str, ville: str = "France") -> str:
 
 
 @tool
+def offres_non_notees(limite: int = 15) -> str:
+    """Lists offers still waiting to be scored (score IS NULL) -- oldest
+    first, the same order lancer_scoring actually processes them in. Use
+    this for a question like 'what's still waiting to be scored' or 'why
+    isn't offer X showing a score yet'."""
+    from core import queries
+
+    rows = queries.list_unscored_offers(limit=min(limite, 30))
+    if not rows:
+        return "Nothing waiting to be scored -- every open offer already has a score."
+    return "\n".join(
+        f"#{r['id']} {r['title'] or '(untitled)'} -- {r['company'] or '?'} ({r['location'] or '?'}) "
+        f"-- {common.offer_type_label(r['source'])}, found {r['first_seen_at']}"
+        for r in rows
+    )
+
+
+@tool
+def lancer_scoring() -> str:
+    """Scores the pending backlog right now instead of waiting for the next
+    scheduled discovery run -- same LLM scoring step (graphs/discovery_graph.py
+    ::score_node), same per-call cap (DISCOVERY_MAX_SCORE_PER_RUN). Use this
+    when the user explicitly asks to score/rescore now; it does not draft
+    cover letters for anything that scores well here (that only happens as
+    part of a scheduled discovery run) -- say so if a result scores above
+    DISCOVERY_LETTER_SCORE_THRESHOLD, so the user knows a letter isn't
+    coming until the next scheduled run."""
+    from graphs.discovery_graph import run_scoring_now
+
+    scored = run_scoring_now()
+    if not scored:
+        return "Nothing was waiting to be scored."
+    lines = [f"Scored {len(scored)} offer(s):"]
+    lines += [
+        f"#{o['id']} [{o['score']}] {o['title'] or '(untitled)'} -- {o['company'] or '?'}"
+        for o in sorted(scored, key=lambda o: o.get("score") or 0, reverse=True)
+    ]
+    return "\n".join(lines)
+
+
+@tool
 def strategie_recherche() -> str:
     """Shows the search keyword currently in use for each discovery source
     that takes a free-text query (Adzuna, JobSpy/Indeed, France Travail --
@@ -1096,7 +1137,8 @@ def execute_pending_send(pending_id: str) -> dict:
 
 
 TOOLS = [
-    rechercher_offres, chercher_offres_maintenant, strategie_recherche, journal_recherches,
+    rechercher_offres, chercher_offres_maintenant, offres_non_notees, lancer_scoring,
+    strategie_recherche, journal_recherches,
     dernieres_notifications, mes_candidatures, details_offre,
     description_complete_offre, rechercher_entreprise, quotas_api_restants, rechercher_contacts_entreprise,
     surveiller_entreprise, retirer_entreprise_suivie, lister_entreprises_suivies,

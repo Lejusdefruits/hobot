@@ -42,6 +42,20 @@ def list_offers(limit: int = 8) -> list:
         ).fetchall()
 
 
+def list_unscored_offers(limit: int = 25) -> list:
+    """Offers still waiting on score_node (graphs/discovery_graph.py) --
+    same oldest-first order that queue is actually scored in
+    (SCORE_QUEUE_QUERY), so this doubles as a preview of what a scoring run
+    would pick up next."""
+    with get_connection() as conn:
+        return conn.execute(
+            """SELECT id, title, company, location, source, first_seen_at FROM offers
+               WHERE score IS NULL AND status NOT IN ('applied', 'excluded', 'expired')
+               ORDER BY first_seen_at ASC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+
 def get_offer_detail(offer_id: int) -> tuple:
     """Returns (row, has_dossier) -- row is None if the posting doesn't exist."""
     with get_connection() as conn:

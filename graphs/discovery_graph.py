@@ -604,6 +604,17 @@ def score_node(state: DiscoveryState) -> dict:
     return {"scored_offers": scored}
 
 
+def run_scoring_now() -> list[dict]:
+    """On-demand scoring, outside the scheduled discovery run -- for
+    lancer_scoring (graphs/chat_agent.py, reachable through /ask on Discord
+    and the terminal UI's Chat pane) and the terminal UI's own "Score now"
+    button (tui/panes/offers.py). score_node reads its queue straight from
+    the database (not from graph state), so it's already safe to call on its
+    own like this; still capped at MAX_SCORE_PER_RUN per call, same as a
+    scheduled run -- call it again if the backlog is bigger than that."""
+    return score_node({})["scored_offers"]
+
+
 LETTER_SCORE_THRESHOLD = int(os.environ.get("DISCOVERY_LETTER_SCORE_THRESHOLD", "80"))
 MAX_LETTERS_PER_RUN = int(os.environ.get("DISCOVERY_MAX_LETTERS_PER_RUN", "5"))
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / os.environ.get("HOBOT_OUTPUT_DIR", "outputs")

@@ -1,21 +1,24 @@
-"""Profile pane -- view the structured profile plus upload a CV (pdf/docx)
+"""Profile pane -- view the structured profile, upload a CV (pdf/docx)
 through the same detect_format -> parse_cv -> save_profile ->
 save_profile_source sequence (core/profile.py) the Discord /profile command
-calls. Free-text profile updates ("I'm looking for X in Lyon") go through
-the Chat pane instead -- an LLM round-trip doesn't belong behind a file
-upload button, and definir_profil/modifier_profil (graphs/chat_agent.py)
-already handle it there."""
+calls, or edit full_name/skills/target_roles/target_locations directly
+(ProfileEditModal, tui/modals.py) -- the same fields definir_profil/
+modifier_profil (graphs/chat_agent.py, reachable through Chat/`/ask`) touch,
+without the LLM round-trip for a plain "fix this field" edit. Free-text
+updates ("I'm looking for X in Lyon", CV-derived experience/education) still
+go through Chat/`/ask`; ProfileEditModal never touches those."""
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Button, Static
 
-from tui.modals import CvFilePickerModal
+from tui.modals import CvFilePickerModal, ProfileEditModal
 
 
 class ProfilePane(Vertical):
     def compose(self) -> ComposeResult:
         yield Static(id="profile-content", classes="section")
         with Vertical(classes="button-row"):
+            yield Button("Edit profile...", id="edit-profile")
             yield Button("Upload CV...", id="upload-cv")
             yield Button("Refresh", id="refresh")
         yield Static(id="profile-error", classes="error-text")
@@ -44,6 +47,15 @@ class ProfilePane(Vertical):
             self.refresh_profile()
         elif event.button.id == "upload-cv":
             self._prompt_cv_path()
+        elif event.button.id == "edit-profile":
+            self._edit_profile()
+
+    def _edit_profile(self) -> None:
+        def handle(saved: bool) -> None:
+            if saved:
+                self.notify("Profile updated.")
+                self.refresh_profile()
+        self.app.push_screen(ProfileEditModal(), handle)
 
     def _prompt_cv_path(self) -> None:
         def handle(path) -> None:

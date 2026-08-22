@@ -297,6 +297,30 @@ async def offers(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=OffersView(rows))
 
 
+@tree.command(name="unscored", description="Offers still waiting to be scored, oldest first")
+async def unscored(interaction: discord.Interaction):
+    rows = queries.list_unscored_offers(limit=15)
+
+    if not rows:
+        embed = base_embed("Waiting to be scored", description="Nothing waiting -- every open offer already has a score.")
+        await interaction.response.send_message(embed=embed)
+        return
+
+    embed = base_embed(
+        f"Waiting to be scored ({len(rows)})",
+        description="Scored automatically on the next discovery run, or right now via "
+                     "`/ask \"score the pending offers\"`.",
+    )
+    for r in rows:
+        name = f"#{r['id']} — {r['title'] or '(untitled)'}"[:256]
+        value = r["company"] or "?"
+        if r["location"]:
+            value += f" — {r['location']}"
+        value += f"\n{common.offer_type_label(r['source'])}, found {r['first_seen_at']}"
+        embed.add_field(name=name, value=value[:1024], inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
 STATUS_LABELS = common.STATUS_LABELS
 
 

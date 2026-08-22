@@ -7,7 +7,7 @@ from pathlib import Path
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, DirectoryTree, Label, Static, TextArea
+from textual.widgets import Button, DirectoryTree, Input, Label, Static, TextArea
 
 
 class ConfirmModal(ModalScreen[bool]):
@@ -79,6 +79,83 @@ class CvFilePickerModal(ModalScreen[Path | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class ProfileEditModal(ModalScreen[bool]):
+    """Direct edit of the four simple profile fields (full_name, skills,
+    target_roles, target_locations -- same fields graphs/chat_agent.py's
+    modifier_profil touches) without going through the LLM: definir_profil/
+    modifier_profil (via Chat, or Discord's /ask) stay the way to describe
+    yourself in plain language or tweak one item at a time, this is the
+    "just let me fix a field directly" path the terminal UI was missing --
+    uploading a CV was the only way to ever set a profile here before.
+    dismiss(True) if something was saved, dismiss(False) on Cancel/Escape
+    (the caller only needs to know whether to refresh)."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Edit profile", classes="modal-title")
+            yield Label("Full name")
+            yield Input(id="profile-full-name")
+            yield Label("Skills (comma-separated)")
+            yield Input(id="profile-skills")
+            yield Label("Target roles (comma-separated)")
+            yield Input(id="profile-target-roles")
+            yield Label("Target locations (comma-separated)")
+            yield Input(id="profile-target-locations")
+            with Horizontal(classes="button-row"):
+                yield Button("Save", id="save", variant="primary")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        from core.db import get_user_profile
+
+        profile = get_user_profile() or {}
+        self.query_one("#profile-full-name", Input).value = profile.get("full_name") or ""
+        self.query_one("#profile-skills", Input).value = ", ".join(profile.get("skills") or [])
+        self.query_one("#profile-target-roles", Input).value = ", ".join(profile.get("target_roles") or [])
+        self.query_one("#profile-target-locations", Input).value = ", ".join(profile.get("target_locations") or [])
+        self.query_one("#profile-full-name", Input).focus()
+
+    @staticmethod
+    def _split(value: str) -> list[str]:
+        return [v.strip() for v in value.split(",") if v.strip()]
+
+    def _save(self) -> None:
+        import json
+
+        from core.db import get_connection
+
+        full_name = self.query_one("#profile-full-name", Input).value.strip() or None
+        skills = self._split(self.query_one("#profile-skills", Input).value)
+        target_roles = self._split(self.query_one("#profile-target-roles", Input).value)
+        target_locations = self._split(self.query_one("#profile-target-locations", Input).value)
+
+        with get_connection() as conn:
+            conn.execute(
+                """INSERT INTO user_profile (id, full_name, skills, target_roles, target_locations, updated_at)
+                   VALUES (1, ?, ?, ?, ?, datetime('now'))
+                   ON CONFLICT(id) DO UPDATE SET
+                       full_name = excluded.full_name, skills = excluded.skills,
+                       target_roles = excluded.target_roles, target_locations = excluded.target_locations,
+                       updated_at = excluded.updated_at""",
+                (
+                    full_name, json.dumps(skills, ensure_ascii=False),
+                    json.dumps(target_roles, ensure_ascii=False), json.dumps(target_locations, ensure_ascii=False),
+                ),
+            )
+        self.dismiss(True)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            self._save()
+        else:
+            self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
 
 class OfferDetailScreen(ModalScreen[str | None]):

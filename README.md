@@ -564,10 +564,17 @@ Seven tabs (`F1`-`F7` to jump between them, or click/Tab through them):
   weekly digest, and a reset (wipes everything, asks for confirmation first).
 - **Offers** -- the best-scored open postings; Enter on a row opens the full
   posting with mark-applied / exclude / tailor-CV / edit-and-save-the-letter
-  actions, same as the equivalent Discord buttons.
+  actions, same as the equivalent Discord buttons. "Show unscored" swaps the
+  same table to the backlog still waiting on a score, oldest first; "Score
+  now" scores that backlog immediately instead of waiting for the next
+  scheduled discovery run (same step, same per-run cap, as the scheduled one
+  -- `/unscored` and `/ask "score the pending offers"` cover the same ground
+  from Discord).
 - **Applications**, **Drafts** (send/delete, same daily send cap as
-  everywhere else), **Profile** (view + upload a CV; free-text profile
-  updates go through Chat instead, same as Discord's `/profile` flow).
+  everywhere else), **Profile** (view + upload a CV; "Edit profile" changes
+  name/skills/target roles/target locations directly, no LLM round-trip --
+  free-text updates, and anything CV-derived like experience/education, still
+  go through Chat instead, same as Discord's `/profile`/`/ask` flow).
 - **Chat** -- the same agent `/ask` talks to, full conversation history,
   proposed email sends shown with their own confirm button.
 - **Reports** -- sources, quotas, search log, search strategy,
@@ -694,8 +701,8 @@ Once the bot is online and the profile is set (step 5 above):
 
 ## Commands
 
-22 slash commands in total -- `/ask` is the last one below, and opens up a
-much wider set of tools in plain language on top of the other 21. Roughly the
+23 slash commands in total -- `/ask` is the last one below, and opens up a
+much wider set of tools in plain language on top of the other 22. Roughly the
 Discord equivalent of the terminal UI's tabs (see below): most of these
 mirror something a Reports/Status/Drafts pane shows at a glance there:
 
@@ -704,6 +711,7 @@ mirror something a Reports/Status/Drafts pane shows at a glance there:
 | `/status` | Summary of the last discovery/mail run and when the next one is due |
 | `/offers` | Best active postings, with an "already applied" button on each |
 | `/offer <id>` | Full detail on one posting: description, score, status, last seen live |
+| `/unscored` | Postings still waiting to be scored, oldest first |
 | `/files <id>` | Sends the already-generated CV + cover letter for a posting |
 | `/applied <id>` | Marks a posting applied (drops it from `/offers`) |
 | `/exclude <id>` | Manually excludes a posting (no longer appears in `/offers`, `/status`, searches) |
@@ -725,15 +733,16 @@ mirror something a Reports/Status/Drafts pane shows at a glance there:
 
 `/ask` is backed by an agent that can, among other things: look up a
 specific posting or run a live search for a city/keyword outside your usual
-coverage, give the full detail on a posting, write or review a cover letter,
-tailor your CV for a specific offer, look up a company's contacts (officers,
-verified emails), add or remove a company from the ATS watchlist or run the
-funding-news check on demand (see above), exclude or re-include a posting,
-show or edit your profile, give the score breakdown across all postings,
-list applications already sent, list pending mail drafts, report how many
-sends are left for the day, and create/edit/delete a draft reply. One
-plain-language sentence is enough, no need to know a tool's exact name for
-the agent to pick the right one.
+coverage, list postings still waiting to be scored and score that backlog
+right now instead of waiting for the next scheduled discovery run, write or
+review a cover letter, tailor your CV for a specific offer, look up a
+company's contacts (officers, verified emails), add or remove a company from
+the ATS watchlist or run the funding-news check on demand (see above),
+exclude or re-include a posting, show or edit your profile, give the score
+breakdown across all postings, list applications already sent, list pending
+mail drafts, report how many sends are left for the day, and create/edit/
+delete a draft reply. One plain-language sentence is enough, no need to know
+a tool's exact name for the agent to pick the right one.
 
 ## Architecture
 

@@ -164,6 +164,22 @@ CvFilePickerModal #cv-tree {
     height: 1fr;
 }
 
+ProfileEditModal {
+    align: center middle;
+}
+
+ProfileEditModal > Vertical {
+    width: 70;
+    height: auto;
+    border: round $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+ProfileEditModal Input {
+    margin-bottom: 1;
+}
+
 OfferDetailScreen {
     align: center middle;
 }
