@@ -1,5 +1,7 @@
 # hobot
 
+<p align="center"><img src="assets/demo.gif" alt="hobot terminal UI: status, offers, offer detail, chat" width="760"></p>
+
 A job-hunting agent that runs in the background and is driven from Discord
 and/or a terminal UI: finds postings, scores them against your profile,
 writes its own cover letters, optionally watches your inbox and drafts
@@ -28,6 +30,20 @@ a drop-in alternative if you'd rather not run a model locally.
 [Design and safety](#design-and-safety)
 
 ## Quick start
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lejusdefruits/hobot/main/install.sh | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Lejusdefruits/hobot/main/install.ps1 | iex
+```
+
+Clones into `./hobot` and runs the base install (venv, dependencies, `.env`)
+in one go. Prefer to see the script before running it, or already have a
+clone/fork? Same result by hand:
 
 ```bash
 git clone <your-fork-or-this-repo> hobot && cd hobot
@@ -760,6 +776,7 @@ a tool's exact name for the agent to pick the right one.
 ```
 daemon.py            — the daemon process: scheduler (APScheduler) + Discord bot (optional)
 cli.py                — terminal UI entry point (its own separate process, see "Terminal UI" above)
+install.sh, install.ps1 — one-line install: clone + setup.sh/setup.ps1, see "Quick start" above
 setup.sh, setup.ps1  — base install (venv, dependencies, .env) for Linux/macOS and Windows
 systemd/, launchd/    — background-service unit files, see "Running it continuously"
 graphs/
