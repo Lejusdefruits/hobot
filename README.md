@@ -1,5 +1,11 @@
 # hobot
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/LLM-Ollama%20%7C%20OpenAI%20%7C%20Anthropic-6f42c1.svg" alt="Ollama, OpenAI, or Anthropic">
+</p>
+
 <p align="center"><img src="assets/demo.gif" alt="hobot terminal UI: status, offers, offer detail, chat" width="760"></p>
 
 A job-hunting agent that runs in the background and is driven from Discord
