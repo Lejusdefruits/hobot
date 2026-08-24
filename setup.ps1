@@ -52,54 +52,32 @@ function Write-Failure {
     Write-Host $Message
 }
 
-# Runs one external command with a real progress bar in front of it (no
-# percentage to report -- pip doesn't expose one -- so this just keeps it
-# visibly moving instead of a blank line during a slow resolve/download).
-# Output is captured and only shown back if the command actually fails.
+# Runs one external command directly (the "&" call operator), letting its
+# own output flow straight to the console -- pip/venv's normal install
+# progress, visible as it happens.
+#
+# This used to run through Start-Process with redirected output and a
+# Write-Progress spinner, for a quieter, prettier terminal: nothing printed
+# unless a step actually failed, then a real progress bar in the meantime.
+# Dropped after it proved unreliable on a real Windows machine: creating the
+# venv with a real (non-Microsoft-Store) Python, invoked by its own fully
+# resolved absolute path, still silently failed through that combination --
+# empty exit code, nothing captured -- while the exact same command,
+# run directly, worked every single time. Whatever the precise reason (a few
+# real, documented Start-Process/redirection gotchas were fixed along the
+# way and still didn't account for it), reliability wins over a progress
+# bar: this is plain, boring, and every install step here has already been
+# proven to behave correctly when invoked exactly this way.
 function Invoke-Step {
     param([string]$Message, [string]$FilePath, [string[]]$ArgumentList)
-    $outLog = [System.IO.Path]::GetTempFileName()
-    $errLog = [System.IO.Path]::GetTempFileName()
-    $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -PassThru `
-        -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-    $pct = 0
-    while (-not $proc.HasExited) {
-        $pct = ($pct + 4) % 100
-        Write-Progress -Activity $Message -Status "working" -PercentComplete $pct
-        Start-Sleep -Milliseconds 150
-    }
-    # HasExited can flip true before .NET has actually finished reaping the
-    # process -- a documented Start-Process quirk: ExitCode can read back
-    # empty, and the redirected stdout/stderr files can still be missing
-    # their last writes, right after the polling loop above exits. Confirmed
-    # here (a step that visibly failed showed an empty exit code and no
-    # captured output). WaitForExit() with no timeout blocks until the
-    # process is fully reaped -- returns immediately since HasExited is
-    # already true, but guarantees ExitCode and the log files are reliable
-    # by the time they're read below.
-    $proc.WaitForExit()
-    Write-Progress -Activity $Message -Completed
-    if ($proc.ExitCode -eq 0) {
+    & $FilePath @ArgumentList
+    if ($LASTEXITCODE -eq 0) {
         Write-Done $Message
     } else {
         if ($UseColor) { Write-Host "  failed " -ForegroundColor Red -NoNewline } else { Write-Host "  failed " -NoNewline }
-        Write-Host $Message
-        $logContent = Get-Content $outLog, $errLog -ErrorAction SilentlyContinue
-        if ($logContent) {
-            $logContent | Write-Host
-        } else {
-            # No stdout/stderr captured at all despite a non-zero exit --
-            # notable on its own (a real Python/pip failure is normally
-            # verbose), most often seen with the Microsoft Store's Python
-            # (an app execution alias, not a real executable, whose
-            # subprocess I/O doesn't always forward the way a normal .exe's
-            # does) -- the exit code is at least something to go on.
-            Write-Host "  (no output was captured -- process exit code $($proc.ExitCode))" -ForegroundColor DarkGray
-        }
-        Remove-Item $outLog, $errLog -ErrorAction SilentlyContinue
+        Write-Host "$Message (exit code $LASTEXITCODE, see the output above)"
         exit 1
     }
-    Remove-Item $outLog, $errLog -ErrorAction SilentlyContinue
 }
 
 try {
