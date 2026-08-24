@@ -57,11 +57,15 @@ git clone <your-fork-or-this-repo> hobot && cd hobot
 ```
 
 The last step is a guided setup -- checks whether this machine can run the
-default local model comfortably (offering a free Groq cloud key instead if
-not), then asks which optional features (Discord, French job sources, mail
-monitoring, web search, company contacts...) to turn on now versus later,
-opening each one's signup page on request, and finally offers to start the
-daemon automatically at login. Nothing here is final: skip anything, and
+default local model comfortably (offering a choice of cloud LLMs instead if
+not, each labeled with what it actually costs: Groq is free with just a
+Google account, OpenAI/Anthropic need billing set up), asks once whether
+you're job-hunting in France (skipping France-only sources entirely --
+La Bonne Alternance, France Travail, Pappers -- for a "no"), then asks which
+of the remaining optional features (Discord, Adzuna, mail monitoring, web
+search, company contacts...) to turn on now versus later, opening each
+one's signup page on request, and finally offers to start the daemon
+automatically at login. Nothing here is final: skip anything, and
 fill in or change `.env` by hand whenever. It only runs in a real terminal --
 running the one-liner above by hand still prompts normally (`bash -c
 "$(curl ...)"` never occupies stdin with the script itself, unlike a plain
@@ -194,9 +198,10 @@ hardware. See [Platforms](#platforms) for what else differs by OS.
 The guided setup wizard (last step of `setup.sh`/`setup.ps1`) checks this for
 you -- a RAM-only check (`HOBOT_MIN_RAM_GB_COMFORTABLE`/`_MARGINAL` in
 `.env`, 16/8 GB by default; GPU is detected and shown but doesn't affect the
-verdict) -- and offers a free Groq cloud key on the spot if the machine looks
-too light for qwen3.8. Same check, run by hand any time:
-`.venv/bin/python -m core.hardware`.
+verdict) -- and if the machine looks too light for qwen3.8, offers a choice
+of cloud LLMs on the spot instead: Groq (free, only a Google account),
+OpenAI, or Anthropic (both paid, billing required), or keeping Ollama
+anyway. Same check, run by hand any time: `.venv/bin/python -m core.hardware`.
 
 ### 1. Ollama
 
