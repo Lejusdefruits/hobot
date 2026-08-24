@@ -9,12 +9,52 @@ ask() is a blocking LLM call with no per-request timeout (unlike Discord's
 interaction-token expiry) -- run in a worker thread so the rest of the UI
 (other panes, the input box) stays responsive while the model thinks."""
 import os
+import re
 
+from rich.style import Style
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Input, Static
 
 CLI_CHAT_THREAD_ID = os.environ.get("CLI_CHAT_THREAD_ID", "cli")
+
+# https URLs only -- job postings, letters, and everything this agent talks
+# about link out over https, never a bare "http://" worth special-casing.
+_LINK_RE = re.compile(r"https://\S+")
+# Trailing characters a URL picked up from surrounding prose almost never
+# actually belongs to it (end of sentence, comma, a closing paren that
+# opened before the URL started) -- stripped off the clickable span and
+# rendered back as plain text right after it.
+_LINK_TRAILING_PUNCTUATION = ").,;:!?\"'"
+
+LINK_STYLE = Style(underline=True, color="bright_cyan")
+
+
+def _message_text(content: str) -> Text:
+    """Plain text with any https:// link turned into a clickable span --
+    built up with Text.append() instead of parsing `content` as markup, so
+    arbitrary LLM output (a job posting's own description can end up quoted
+    back in a reply) can never inject a markup/action sequence of its own.
+    The click handler below reads the URL back out of the span's meta dict,
+    never through a parsed action string, for the same reason."""
+    text = Text()
+    pos = 0
+    for m in _LINK_RE.finditer(content):
+        if m.start() > pos:
+            text.append(content[pos:m.start()])
+        url = m.group(0)
+        trailing = ""
+        while url and url[-1] in _LINK_TRAILING_PUNCTUATION:
+            trailing = url[-1] + trailing
+            url = url[:-1]
+        text.append(url, style=LINK_STYLE + Style(meta={"hobot_link": url}))
+        if trailing:
+            text.append(trailing)
+        pos = m.end()
+    if pos < len(content):
+        text.append(content[pos:])
+    return text
 
 
 class ChatPane(Vertical):
@@ -66,13 +106,23 @@ class ChatPane(Vertical):
 
     def _append_turn(self, role: str, content: str) -> None:
         log = self.query_one("#chat-log", VerticalScroll)
-        role_class = "chat-role-user" if role == "user" else "chat-role-assistant"
-        role_label = "You" if role == "user" else "hobot"
-        turn = Vertical(classes="chat-turn")
+        is_user = role == "user"
+        turn = Vertical(classes=f"chat-turn {'chat-turn-user' if is_user else 'chat-turn-assistant'}")
         log.mount(turn)
-        turn.mount(Static(role_label, classes=role_class))
-        turn.mount(Static(content, markup=False))
+        turn.mount(Static("You" if is_user else "hobot", classes="chat-role-user" if is_user else "chat-role-assistant"))
+        turn.mount(Static(_message_text(content), classes="chat-message"))
         log.scroll_end(animate=False)
+
+    def on_click(self, event) -> None:
+        # Click bubbles up from whichever Static rendered the link (see
+        # _message_text) -- caught once here instead of a custom widget
+        # subclass per message. event.style reflects whatever's under the
+        # cursor at click time, only set on a link span (see LINK_STYLE).
+        style = getattr(event, "style", None)
+        url = style.meta.get("hobot_link") if style else None
+        if url:
+            event.stop()
+            self.app.open_url(url)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self._send()

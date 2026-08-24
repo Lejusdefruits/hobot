@@ -617,7 +617,8 @@ Seven tabs (`F1`-`F7` to jump between them, or click/Tab through them):
   free-text updates, and anything CV-derived like experience/education, still
   go through Chat instead, same as Discord's `/profile`/`/ask` flow).
 - **Chat** -- the same agent `/ask` talks to, full conversation history,
-  proposed email sends shown with their own confirm button.
+  proposed email sends shown with their own confirm button, any link in a
+  reply clickable, scrollable with the keyboard (not just a mouse wheel).
 - **Reports** -- sources (every discovery source, always, not just ones that
   already ran -- a **Configured** column shows whether it actually has what
   it needs, e.g. an API key, separately from whether it's found anything

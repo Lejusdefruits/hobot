@@ -128,8 +128,28 @@ TextArea {
     height: auto;
 }
 
+/* Same default-is-1fr trap as #pending-sends above, but worse here: with
+   several turns mounted in #chat-log, Textual split its height N ways by
+   fraction instead of sizing each to its own content -- a short "You"/
+   "hobot" role label fit inside its slice, but the actual message text
+   (often several lines) got clipped to whatever sliver of the fraction was
+   left, or overflowed past the log's own border entirely depending on how
+   many turns existed. auto here is what makes each turn only as tall as
+   its own content, which in turn is what makes #chat-log's own scrolling
+   (and the up/down/pageup/pagedown bindings above it) work correctly. */
 .chat-turn {
+    height: auto;
     margin-bottom: 1;
+    padding: 0 1;
+    border-left: thick $primary-lighten-2;
+}
+
+.chat-turn-user {
+    border-left: thick $accent;
+}
+
+.chat-turn-assistant {
+    border-left: thick $success;
 }
 
 .chat-role-user {
@@ -140,6 +160,10 @@ TextArea {
 .chat-role-assistant {
     color: $success;
     text-style: bold;
+}
+
+.chat-message {
+    height: auto;
 }
 
 .chat-input-row {
