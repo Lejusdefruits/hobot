@@ -21,6 +21,8 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Input, Label, Static
 
+from tui.widgets import PasteableInput
+
 from tui.modals import CvFilePickerModal
 
 
@@ -37,13 +39,13 @@ class ProfilePane(VerticalScroll):
             # ×4 fields alone was most of why this didn't fit an ordinary
             # 80x24 terminal without scrolling.
             yield Label("Full name")
-            yield Input(id="profile-full-name", compact=True)
+            yield PasteableInput(id="profile-full-name", compact=True)
             yield Label("Skills (comma-separated)")
-            yield Input(id="profile-skills", compact=True)
+            yield PasteableInput(id="profile-skills", compact=True)
             yield Label("Target roles (comma-separated)")
-            yield Input(id="profile-target-roles", compact=True)
+            yield PasteableInput(id="profile-target-roles", compact=True)
             yield Label("Target locations (comma-separated)")
-            yield Input(id="profile-target-locations", compact=True)
+            yield PasteableInput(id="profile-target-locations", compact=True)
             with Horizontal(classes="button-row"):
                 yield Button("Save", id="save-profile", variant="primary")
                 yield Button("Cancel", id="cancel-profile-edit")

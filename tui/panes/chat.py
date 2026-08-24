@@ -17,6 +17,8 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Input, Static
 
+from tui.widgets import PasteableInput
+
 from tui.modals import ConfirmModal
 
 CLI_CHAT_THREAD_ID = os.environ.get("CLI_CHAT_THREAD_ID", "cli")
@@ -94,7 +96,7 @@ class ChatPane(Vertical):
         with Vertical(id="pending-sends"):
             pass
         with Horizontal(classes="chat-input-row"):
-            yield Input(placeholder="Ask anything -- find postings, check a score, draft a reply...", id="chat-input")
+            yield PasteableInput(placeholder="Ask anything -- find postings, check a score, draft a reply...", id="chat-input")
             yield Button("Send", id="send-chat", variant="primary")
             yield Button("Clear chat", id="clear-chat")
 
