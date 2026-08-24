@@ -51,10 +51,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from langgraph.graph import END, START, StateGraph
 
-from core import ats_watchlist, locations
+from core import ats_watchlist, hardware, locations
 from core.circuit_breaker import compute_backoff_until, is_backed_off
 from core.db import get_connection, get_user_profile, init_db
 from core.llm import chat_json
+from core.llm_provider import LLM_PROVIDER
 from tools import (
     sources_adzuna, sources_ats, sources_francetravail, sources_jobspy,
     sources_labonneboite, sources_lba, web_search,
@@ -589,10 +590,45 @@ SCORE_QUEUE_QUERY = """
 THIN_DESCRIPTION_THRESHOLD = 200
 MAX_COMPANY_SEARCHES_PER_RUN = int(os.environ.get("DISCOVERY_MAX_COMPANY_SEARCHES_PER_RUN", "10"))
 
+# Skip scoring on a scheduled run (never an on-demand one, see
+# run_scoring_now() below) when the local machine is busy -- scoring means
+# running local LLM inference (Ollama), which competes for the same CPU as
+# whatever the user is actually doing right now (a game, a build, anything
+# demanding). Irrelevant once LLM_PROVIDER is a cloud API: that inference
+# doesn't run on this machine at all, so there's nothing to defer.
+DEFER_ON_HIGH_LOAD = os.environ.get("DISCOVERY_DEFER_ON_HIGH_LOAD", "1") == "1"
+MAX_CPU_LOAD_FRACTION = float(os.environ.get("DISCOVERY_MAX_CPU_LOAD_FRACTION", "0.85"))
 
-def score_node(state: DiscoveryState) -> dict:
+
+def _should_defer_scoring() -> tuple[bool, str | None]:
+    if not DEFER_ON_HIGH_LOAD or LLM_PROVIDER != "ollama":
+        return False, None
+    try:
+        busy = hardware.is_machine_busy(threshold=MAX_CPU_LOAD_FRACTION)
+    except Exception as e:
+        # Fail open: a broken load check must never permanently block
+        # scoring, same rule as every other best-effort integration in this
+        # project (web search, desktop notify, funding check).
+        _log(f"[score] load check failed ({e}), proceeding without deferral")
+        return False, None
+    return (busy, "high local CPU load") if busy else (False, None)
+
+
+def score_node(state: DiscoveryState, respect_load_gate: bool = True) -> dict:
     """Scores directly from the database queue (not from state["new_offers"]):
-    covers both this run's offers and the unscored backlog from previous runs."""
+    covers both this run's offers and the unscored backlog from previous runs.
+
+    respect_load_gate=False (run_scoring_now() below) skips the busy-machine
+    check entirely -- that path is always a direct, synchronous request (a
+    chat command, the TUI's "Score now" button), so refusing it because the
+    CPU happens to be busy would be surprising instead of helpful; only the
+    scheduled path defers on its own initiative."""
+    if respect_load_gate:
+        deferred, reason = _should_defer_scoring()
+        if deferred:
+            _log(f"[score] skipped this run -- {reason} (will retry next scheduled run)")
+            return {"scored_offers": []}
+
     profile = get_user_profile() or {"skills": [], "target_roles": [], "target_locations": []}
     scored = []
     company_searches_done = 0
@@ -664,8 +700,11 @@ def run_scoring_now() -> list[dict]:
     button (tui/panes/offers.py). score_node reads its queue straight from
     the database (not from graph state), so it's already safe to call on its
     own like this; still capped at MAX_SCORE_PER_RUN per call, same as a
-    scheduled run -- call it again if the backlog is bigger than that."""
-    return score_node({})["scored_offers"]
+    scheduled run -- call it again if the backlog is bigger than that.
+    respect_load_gate=False: a direct request like this should never be
+    silently skipped over machine load the user didn't ask about -- only
+    the scheduled path defers on its own initiative."""
+    return score_node({}, respect_load_gate=False)["scored_offers"]
 
 
 LETTER_SCORE_THRESHOLD = int(os.environ.get("DISCOVERY_LETTER_SCORE_THRESHOLD", "80"))
