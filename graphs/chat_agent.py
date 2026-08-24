@@ -971,16 +971,19 @@ def modifier_profil(champ: str, action: str, valeur: str) -> str:
     with get_connection() as conn:
         row = conn.execute(f"SELECT {champ} FROM user_profile WHERE id = 1").fetchone()
         current = json.loads(row[champ]) if row and row[champ] else []
+        # profile.py persists this list straight from an LLM's JSON extraction
+        # with no validation, so a weaker/local model can leave a non-string
+        # element in there -- guard every .lower() instead of crashing on it.
         if action == "ajouter":
-            if valeur not in current:
+            if not any(isinstance(v, str) and v.lower() == valeur.lower() for v in current):
                 current.append(valeur)
         else:
-            current = [v for v in current if v.lower() != valeur.lower()]
+            current = [v for v in current if not (isinstance(v, str) and v.lower() == valeur.lower())]
         conn.execute(
             f"UPDATE user_profile SET {champ} = ?, updated_at = datetime('now') WHERE id = 1",
             (json.dumps(current, ensure_ascii=False),),
         )
-    return f"{champ} updated: {', '.join(current) or '(empty)'}"
+    return f"{champ} updated: {', '.join(str(v) for v in current) or '(empty)'}"
 
 
 @tool

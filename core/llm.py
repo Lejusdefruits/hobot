@@ -60,7 +60,16 @@ def chat(messages: list[dict], temperature: float = 0.1) -> str:
     lc_messages = [_to_langchain_message(m) for m in messages]
     with _semaphore:
         response = get_chat_model(temperature=temperature).invoke(lc_messages)
-    return response.content
+    content = response.content
+    if isinstance(content, list):
+        # openai/anthropic can return content-block lists instead of a plain
+        # string (e.g. a text block plus a citation/thinking block) -- Ollama
+        # never does, but this path has to handle every LLM_PROVIDER.
+        content = "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        )
+    return content
 
 
 def chat_json(prompt: str, images: list[bytes] | None = None, temperature: float = 0.1) -> dict:
