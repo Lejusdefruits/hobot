@@ -92,14 +92,79 @@ def _mask_secret(value: str) -> str:
     return f"{value[:4]}...{value[-4:]}"
 
 
+def _read_masked_unix() -> str:
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    chars: list[str] = []
+    try:
+        # cbreak (not raw): turns off canonical mode + echo so nothing
+        # prints except what we write ourselves, but leaves signal
+        # processing on -- Ctrl+C still raises KeyboardInterrupt normally
+        # instead of being swallowed as a literal character.
+        tty.setcbreak(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch in ("\r", "\n", ""):
+                break
+            if ch in ("\x7f", "\x08"):
+                if chars:
+                    chars.pop()
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+                continue
+            chars.append(ch)
+            sys.stdout.write("*")
+            sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    print()
+    return "".join(chars)
+
+
+def _read_masked_windows() -> str:
+    import msvcrt
+    chars: list[str] = []
+    while True:
+        ch = msvcrt.getwch()
+        if ch in ("\r", "\n"):
+            break
+        if ch == "\x03":
+            raise KeyboardInterrupt
+        if ch == "\x08":
+            if chars:
+                chars.pop()
+                sys.stdout.write("\b \b")
+                sys.stdout.flush()
+            continue
+        chars.append(ch)
+        sys.stdout.write("*")
+        sys.stdout.flush()
+    print()
+    return "".join(chars)
+
+
+def _read_masked(prompt: str) -> str:
+    """Echoes '*' for each character as it's typed or pasted -- unlike
+    getpass.getpass(), which shows nothing at all until Enter, this gives
+    live proof a paste actually landed instead of only a summary
+    afterward. Falls back to getpass (still hidden, just no live echo) if
+    raw terminal mode can't be set up for any reason -- a masking nicety
+    breaking should never block entering a key at all."""
+    print(prompt, end="", flush=True)
+    reader = _read_masked_windows if sys.platform == "win32" else _read_masked_unix
+    try:
+        return reader()
+    except Exception:
+        print()
+        import getpass
+        return getpass.getpass("")
+
+
 def _ask_text(prompt: str, secret: bool = False) -> str:
     if secret:
-        import getpass
-        # getpass shows nothing at all while typing/pasting (not even a
-        # placeholder character) -- with zero feedback there's no way to
-        # tell a paste actually landed, so echo back a masked confirmation
-        # right after capture instead of leaving the user guessing.
-        value = getpass.getpass(f"{prompt} (leave blank to skip): ").strip()
+        value = _read_masked(f"{prompt} (leave blank to skip): ").strip()
         if value:
             print(f"    {DIM}got: {_mask_secret(value)} ({len(value)} characters){RESET}")
         return value
