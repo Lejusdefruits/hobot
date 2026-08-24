@@ -98,6 +98,14 @@ class ChatPane(Vertical):
     def on_mount(self) -> None:
         from graphs.chat_agent import get_history
 
+        # Textual's own mechanism for a chat-log-shaped widget: stays
+        # scrolled to the bottom on every future content change on its own,
+        # rather than this pane having to remember to call scroll_end()
+        # after each mutation and hope the timing works out (the explicit
+        # calls below are kept anyway, as a second, redundant path to the
+        # same result -- cheap insurance, not a sign this alone was
+        # insufficient).
+        self.query_one("#chat-log", VerticalScroll).anchor()
         for turn in get_history(CLI_CHAT_THREAD_ID):
             self._append_turn(turn["role"], turn["content"])
         self._refresh_pending()
