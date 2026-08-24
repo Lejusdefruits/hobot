@@ -41,8 +41,22 @@ if not sys.stdout.isatty() or sys.platform == "win32":
     BOLD = DIM = GREEN = YELLOW = RESET = ""
 
 
+RULE_WIDTH = 60
+
+
+def _rule(char: str = "-") -> str:
+    return char * RULE_WIDTH
+
+
+def _banner(text: str) -> None:
+    print(f"{BOLD}{_rule('=')}{RESET}")
+    print(f"{BOLD}{text}{RESET}")
+    print(f"{BOLD}{_rule('=')}{RESET}")
+
+
 def _heading(text: str) -> None:
     print(f"\n{BOLD}{text}{RESET}")
+    print(f"{DIM}{_rule()}{RESET}")
 
 
 def _ask_yes_no(prompt: str, default: bool = True) -> bool:
@@ -56,6 +70,20 @@ def _ask_yes_no(prompt: str, default: bool = True) -> bool:
         if answer in ("n", "no", "non"):
             return False
         print("  please answer y or n.")
+
+
+def _ask_choice(prompt: str, options: list[str], default_index: int = 0) -> int:
+    print(f"  {prompt}")
+    for i, option in enumerate(options):
+        marker = " (default)" if i == default_index else ""
+        print(f"    {i + 1}. {option}{marker}")
+    while True:
+        raw = input(f"  > [{default_index + 1}] ").strip()
+        if not raw:
+            return default_index
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            return int(raw) - 1
+        print(f"  please enter a number from 1 to {len(options)}.")
 
 
 def _ask_text(prompt: str, secret: bool = False) -> str:
@@ -115,16 +143,23 @@ def parse_env_example() -> dict[str, dict]:
 # (which vars belong together, and whether a var is a secret) is decided
 # here, not the wording.
 
+# france_only: True marks a source that's useless outside the French job
+# market (La Bonne Alternance and France Travail Connect only cover French
+# postings; Pappers is the French legal company registry) -- ask_market()
+# below gates these out entirely for a "no" answer, rather than showing a
+# question about a source that could never return anything relevant. Adzuna
+# is explicitly multi-country and Hunter/Snov are "any country" per their own
+# .env.example comments, so none of those three are gated.
 FEATURES = [
     {"id": "discord", "title": "Discord bot",
      "vars": ["DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID"], "secrets": {"DISCORD_BOT_TOKEN"}},
     {"id": "lba", "title": "La Bonne Alternance (apprenticeship offers, France)",
-     "vars": ["LBA_API_KEY"], "secrets": {"LBA_API_KEY"}},
+     "vars": ["LBA_API_KEY"], "secrets": {"LBA_API_KEY"}, "france_only": True},
     {"id": "adzuna", "title": "Adzuna (general-purpose job search)",
      "vars": ["ADZUNA_APP_ID", "ADZUNA_APP_KEY"], "secrets": {"ADZUNA_APP_KEY"}},
     {"id": "france_travail", "title": "France Travail Connect (Offres d'emploi + La Bonne Boite)",
      "vars": ["FRANCE_TRAVAIL_CLIENT_ID", "FRANCE_TRAVAIL_CLIENT_SECRET"],
-     "secrets": {"FRANCE_TRAVAIL_CLIENT_SECRET"}},
+     "secrets": {"FRANCE_TRAVAIL_CLIENT_SECRET"}, "france_only": True},
     {"id": "ats", "title": "ATS watchlist (Greenhouse/Ashby/Lever, by company name)",
      "vars": ["ATS_WATCHLIST"], "secrets": set()},
     {"id": "email", "title": "Email monitoring (Gmail)",
@@ -133,7 +168,7 @@ FEATURES = [
     {"id": "tavily", "title": "Tavily (web search for letters/contacts)",
      "vars": ["TAVILY_API_KEY"], "secrets": {"TAVILY_API_KEY"}},
     {"id": "pappers", "title": "Pappers (French company registry)",
-     "vars": ["PAPPERS_API_TOKEN"], "secrets": {"PAPPERS_API_TOKEN"}},
+     "vars": ["PAPPERS_API_TOKEN"], "secrets": {"PAPPERS_API_TOKEN"}, "france_only": True},
     {"id": "hunter", "title": "Hunter.io (verified emails by domain)",
      "vars": ["HUNTER_API_KEY"], "secrets": {"HUNTER_API_KEY"}},
     {"id": "snov", "title": "Snov.io (email finder fallback)",
@@ -141,6 +176,13 @@ FEATURES = [
     {"id": "cv", "title": "CV file (for tailoring and profile extraction)",
      "vars": ["CV_PATH"], "secrets": set()},
 ]
+
+
+def ask_market() -> bool:
+    return _ask_yes_no(
+        "Are you job-hunting in France (or already based there)?",
+        default=True,
+    )
 
 
 def ask_feature(records: dict[str, dict], feature: dict) -> dict[str, str]:
@@ -166,6 +208,22 @@ def ask_feature(records: dict[str, dict], feature: dict) -> dict[str, str]:
 
 
 # --- hardware + LLM provider ---------------------------------------------
+# Every option a machine too light for the local model could reasonably use
+# instead, cheapest/easiest first -- each labeled with what it actually
+# costs to get running, not just a single recommendation, so the choice is
+# the user's to make with the real tradeoff in front of them.
+CLOUD_LLM_OPTIONS = [
+    {"label": "Groq", "note": "free, only needs a Google account",
+     "url": "https://console.groq.com", "provider": "openai",
+     "base_url": "https://api.groq.com/openai/v1", "key_var": "OPENAI_API_KEY"},
+    {"label": "OpenAI", "note": "paid, pay-as-you-go billing required",
+     "url": "https://platform.openai.com/api-keys", "provider": "openai",
+     "base_url": None, "key_var": "OPENAI_API_KEY"},
+    {"label": "Anthropic", "note": "paid, pay-as-you-go billing required",
+     "url": "https://console.anthropic.com/settings/keys", "provider": "anthropic",
+     "base_url": None, "key_var": "ANTHROPIC_API_KEY"},
+]
+
 
 def ask_hardware() -> dict[str, str]:
     _heading("Checking whether this machine can run the local model comfortably")
@@ -181,23 +239,36 @@ def ask_hardware() -> dict[str, str]:
         return {}
 
     print(f"  {YELLOW}this machine may struggle with the default local model.{RESET}")
-    groq_console_url = "https://console.groq.com"
-    if not _ask_yes_no(
-        "  Use a free cloud API (Groq -- only needs a Google account) instead of Ollama?",
-        default=True,
-    ):
+    labels = [f"{o['label']} -- {o['note']}" for o in CLOUD_LLM_OPTIONS]
+    labels.append("Keep Ollama anyway -- it may just run slower")
+    choice = _ask_choice("Use a cloud LLM instead?", labels, default_index=0)
+
+    if choice == len(CLOUD_LLM_OPTIONS):
         print(f"  {DIM}keeping Ollama -- it may just run slower.{RESET}")
         return {}
 
-    _offer_browser(groq_console_url)
-    api_key = _ask_text("  OPENAI_API_KEY (from console.groq.com)", secret=True)
+    option = CLOUD_LLM_OPTIONS[choice]
+    _offer_browser(option["url"])
+    api_key = _ask_text(f"  {option['key_var']} (from {option['url']})", secret=True)
     if not api_key:
         print(f"  {DIM}no key entered, keeping Ollama.{RESET}")
         return {}
-    answers = {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": api_key,
-               "OPENAI_BASE_URL": "https://api.groq.com/openai/v1"}
-    print(f"  {GREEN}set to use Groq via the OpenAI-compatible endpoint.{RESET}")
+    answers = {"LLM_PROVIDER": option["provider"], option["key_var"]: api_key}
+    if option["base_url"]:
+        answers["OPENAI_BASE_URL"] = option["base_url"]
+    print(f"  {GREEN}set to use {option['label']}.{RESET}")
     return answers
+
+
+def _describe_llm_choice(answers: dict[str, str]) -> str:
+    if "LLM_PROVIDER" not in answers:
+        return "Ollama (local, unchanged)"
+    base_url = answers.get("OPENAI_BASE_URL", "")
+    if "groq.com" in base_url:
+        return "Groq (cloud)"
+    return {"openai": "OpenAI (cloud)", "anthropic": "Anthropic (cloud)"}.get(
+        answers["LLM_PROVIDER"], answers["LLM_PROVIDER"]
+    )
 
 
 # --- autostart --------------------------------------------------------
@@ -256,7 +327,7 @@ def main() -> None:
         print("No .env found -- run ./setup.sh (or setup.ps1) first.")
         return
 
-    print(f"{BOLD}Guided setup{RESET}")
+    _banner("hobot -- guided setup")
     print(f"{DIM}Answer what you want configured now -- everything else stays as-is in .env,")
     print(f"and can always be filled in later by editing the file directly.{RESET}")
 
@@ -271,20 +342,27 @@ def main() -> None:
 
     _heading("Optional features")
     print(f"{DIM}Each one is independent -- skip anything you don't need right now.{RESET}")
+    targeting_france = ask_market()
+    france_only_ids = {f["id"] for f in FEATURES if f.get("france_only")}
+    if not targeting_france:
+        print(f"  {DIM}skipping France-only sources (La Bonne Alternance, France Travail, Pappers).{RESET}")
+
     for feature in FEATURES:
+        if feature["id"] in france_only_ids and not targeting_france:
+            continue
         answers.update(ask_feature(records, feature))
 
     write_env(answers)
-
-    configured = sorted(k for k in answers if k not in ("LLM_PROVIDER", "OPENAI_BASE_URL"))
-    if configured:
-        _heading("Saved to .env")
-        for key in configured:
-            print(f"  {GREEN}set{RESET} {key}")
-
     ask_autostart()
 
-    print(f"\n{BOLD}Guided setup done.{RESET} {DIM}Review .env any time -- nothing here is final.{RESET}")
+    _banner("Guided setup done")
+    print(f"  LLM: {_describe_llm_choice(answers)}")
+    configured = sorted(k for k in answers if k not in ("LLM_PROVIDER", "OPENAI_BASE_URL"))
+    if configured:
+        print(f"  Saved to .env: {', '.join(configured)}")
+    else:
+        print(f"  {DIM}nothing else saved -- everything else was skipped.{RESET}")
+    print(f"  {DIM}Review .env any time -- nothing here is final.{RESET}")
 
 
 if __name__ == "__main__":
