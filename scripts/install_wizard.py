@@ -86,10 +86,23 @@ def _ask_choice(prompt: str, options: list[str], default_index: int = 0) -> int:
         print(f"  please enter a number from 1 to {len(options)}.")
 
 
+def _mask_secret(value: str) -> str:
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
+
+
 def _ask_text(prompt: str, secret: bool = False) -> str:
     if secret:
         import getpass
-        return getpass.getpass(f"{prompt} (leave blank to skip): ").strip()
+        # getpass shows nothing at all while typing/pasting (not even a
+        # placeholder character) -- with zero feedback there's no way to
+        # tell a paste actually landed, so echo back a masked confirmation
+        # right after capture instead of leaving the user guessing.
+        value = getpass.getpass(f"{prompt} (leave blank to skip): ").strip()
+        if value:
+            print(f"    {DIM}got: {_mask_secret(value)} ({len(value)} characters){RESET}")
+        return value
     return input(f"{prompt} (leave blank to skip): ").strip()
 
 
