@@ -98,15 +98,29 @@ else
 fi
 
 step "Guided setup"
+GUIDED=0
 if [ -t 0 ]; then
     .venv/bin/python scripts/install_wizard.py
+    GUIDED=1
 else
     echo "  ${DIM}non-interactive install, skipping -- edit .env by hand (see README.md).${RESET}"
 fi
 
-cat <<EOF
-
-${BOLD}Base install done.${RESET} Next:
+RULE="------------------------------------------------------------"
+printf '\n%s%s%s\n' "$BOLD" "$RULE" "$RESET"
+printf '%sBase install done.%s\n' "$BOLD" "$RESET"
+printf '%s%s%s\n' "$BOLD" "$RULE" "$RESET"
+if [ "$GUIDED" = 1 ]; then
+    cat <<EOF
+Next:
+  1. Review .env if you want to double check or change anything -- the
+     guided setup above already covers the LLM and most optional features.
+  2. .venv/bin/python daemon.py    # discovery + Discord, if configured
+  3. .venv/bin/python cli.py       # terminal UI, in a second terminal
+EOF
+else
+    cat <<EOF
+Next:
   1. Open .env and fill in the REQUIRED section at the top -- an LLM,
      Ollama by default (nothing to pay for) or a cloud key. See README.md
      for the rest (Discord, French job sources, mail monitoring...), all
@@ -114,3 +128,4 @@ ${BOLD}Base install done.${RESET} Next:
   2. .venv/bin/python daemon.py    # discovery + Discord, if configured
   3. .venv/bin/python cli.py       # terminal UI, in a second terminal
 EOF
+fi

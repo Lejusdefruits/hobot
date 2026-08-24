@@ -104,18 +104,28 @@ if (Test-Path .env) {
 }
 
 Write-Step 5 5 "Guided setup"
+$Guided = $false
 if (-not [Console]::IsInputRedirected) {
     & .venv\Scripts\python.exe scripts\install_wizard.py
+    $Guided = $true
 } else {
     Write-Host "  non-interactive install, skipping -- edit .env by hand (see README.md)." -ForegroundColor DarkGray
 }
 
+$Rule = "-" * 60
 Write-Host ""
+Write-Host $Rule -ForegroundColor White
 Write-Host "Base install done." -ForegroundColor White
+Write-Host $Rule -ForegroundColor White
 Write-Host "Next:"
-Write-Host "  1. Open .env and fill in the REQUIRED section at the top -- an LLM,"
-Write-Host "     Ollama by default (nothing to pay for) or a cloud key. See README.md"
-Write-Host "     for the rest (Discord, French job sources, mail monitoring...), all"
-Write-Host "     optional and off until you fill in their own section."
+if ($Guided) {
+    Write-Host "  1. Review .env if you want to double check or change anything -- the"
+    Write-Host "     guided setup above already covers the LLM and most optional features."
+} else {
+    Write-Host "  1. Open .env and fill in the REQUIRED section at the top -- an LLM,"
+    Write-Host "     Ollama by default (nothing to pay for) or a cloud key. See README.md"
+    Write-Host "     for the rest (Discord, French job sources, mail monitoring...), all"
+    Write-Host "     optional and off until you fill in their own section."
+}
 Write-Host "  2. .venv\Scripts\python.exe daemon.py    # discovery + Discord, if configured"
 Write-Host "  3. .venv\Scripts\python.exe cli.py       # terminal UI, in a second window"
