@@ -9,6 +9,7 @@ import os
 import sqlite3
 import sys
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -179,6 +180,17 @@ CREATE TABLE IF NOT EXISTS ats_watchlist (
     UNIQUE(platform, slug)
 );
 """
+
+
+def parse_utc(iso_string: str) -> datetime:
+    """Every naive timestamp this project stores (SQLite's datetime('now'),
+    or a naive datetime.now(timezone.utc).isoformat()) is UTC, just without
+    the offset -- fromisoformat() alone leaves it naive, which compares
+    incorrectly against an aware datetime.now(timezone.utc) on a UTC+ host.
+    Reached for a third time (core/queries.py's get_daemon_liveness,
+    daemon.py's _first_run_at) after the same naive-vs-aware bug got fixed
+    twice independently -- one shared helper instead of a fourth copy."""
+    return datetime.fromisoformat(iso_string).replace(tzinfo=timezone.utc)
 
 
 @contextmanager

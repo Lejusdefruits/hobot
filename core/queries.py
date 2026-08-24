@@ -7,7 +7,7 @@ The SQL here was moved verbatim out of tools/discord_bot.py's command bodies
 another interface could call), not rewritten -- discord_bot.py now calls
 these and keeps only its embed-formatting code.
 """
-from core.db import get_connection
+from core.db import get_connection, parse_utc
 
 
 def get_status_summary() -> dict:
@@ -151,7 +151,7 @@ def get_daemon_liveness(stale_after_seconds: int = 90) -> dict:
         return {"running": False, "heartbeat_at": None, "discord_status": None}
 
     from datetime import datetime, timedelta, timezone
-    heartbeat_utc = datetime.fromisoformat(row["heartbeat_at"]).replace(tzinfo=timezone.utc)
+    heartbeat_utc = parse_utc(row["heartbeat_at"])
     running = datetime.now(timezone.utc) - heartbeat_utc <= timedelta(seconds=stale_after_seconds)
     return {
         "running": running,

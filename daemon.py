@@ -21,7 +21,7 @@ import os
 import random
 import sys
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -34,7 +34,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from core import daemon_state
-from core.db import get_connection, init_db
+from core.db import get_connection, init_db, parse_utc
 from graphs import discovery_graph, email_graph
 from tools.discord_style import COLOR_DEFAULT, COLOR_ERROR, base_embed
 from tools.notify_tools import notify_all
@@ -147,8 +147,12 @@ def _build_weekly_digest() -> dict | None:
     ("YYYY-MM-DD HH:MM:SS"), emails.received_at has a "+00:00" suffix (comes
     from imap_tools) -- lexicographic `>=` comparison stays correct in both
     cases for a 7-day window (only a second-exact tie right at the boundary
-    would be ambiguous, no impact here)."""
-    since = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    would be ambiguous, no impact here). `since` itself must be computed in
+    UTC (datetime.now(timezone.utc), not the naive local datetime.now()) to
+    actually line up with those UTC-stamped columns -- on a UTC+ host a naive
+    local `since` used to be ahead of real UTC, silently dropping rows from
+    right at the start of the window."""
+    since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
     with get_connection() as conn:
         n_new = conn.execute(
             "SELECT COUNT(*) c FROM offers WHERE first_seen_at >= ?", (since,)
@@ -173,7 +177,7 @@ def _build_weekly_digest() -> dict | None:
             "AND category IN ('recruteur', 'entretien', 'refus') GROUP BY category",
             (since,),
         ).fetchall()
-        stale_since = (datetime.now() - timedelta(days=STALE_DRAFT_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+        stale_since = (datetime.now(timezone.utc) - timedelta(days=STALE_DRAFT_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
         stale_drafts = conn.execute(
             """SELECT o.id, o.title, o.company, a.drafted_at FROM applications a
                JOIN offers o ON o.id = a.offer_id
@@ -280,15 +284,23 @@ def _first_run_at(run_type: str, interval_minutes: int, max_initial_delay_minute
     nothing.
 
     run_log survives restarts (unlike the scheduler, which resets from
-    scratch in memory) -- used here to recover the real due time."""
+    scratch in memory) -- used here to recover the real due time.
+
+    Both sides of the comparison must be UTC-aware: finished_at comes from
+    SQLite's datetime('now'), which is UTC but naive -- comparing it against
+    a naive LOCAL datetime.now() on a UTC+ host made "due" appear later than
+    it really was, so a restart could fire an almost-immediate re-run instead
+    of respecting the interval. Returning a tz-aware datetime here is also
+    safe for apscheduler's next_run_time: it's used as-is regardless of the
+    scheduler's own configured timezone."""
     with get_connection() as conn:
         last = conn.execute(
             "SELECT finished_at FROM run_log WHERE run_type = ? ORDER BY id DESC LIMIT 1", (run_type,)
         ).fetchone()
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     if last and last["finished_at"]:
-        due = datetime.fromisoformat(last["finished_at"]) + timedelta(minutes=interval_minutes)
+        due = parse_utc(last["finished_at"]) + timedelta(minutes=interval_minutes)
         if due > now:
             # small jitter around the normal due time, not a real cadence recalculation
             return due + timedelta(seconds=random.uniform(-60, 300))
