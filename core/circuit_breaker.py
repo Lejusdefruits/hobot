@@ -25,12 +25,18 @@ def is_backed_off(source: str) -> tuple[bool, str | None]:
 
 
 def _consecutive_failures(conn, source: str) -> int:
+    # backoff_until, not errors: a run can log a non-null error while still
+    # keeping substantial partial results (a fetch that throws partway
+    # through a location/query loop but keeps what it already found), and
+    # compute_backoff_until's caller now only asks for backoff on runs with
+    # zero results -- counting by `errors` instead would keep inflating the
+    # streak (and the backoff duration) off of those partial successes.
     rows = conn.execute(
-        "SELECT errors FROM run_log WHERE source = ? ORDER BY id DESC LIMIT 10", (source,)
+        "SELECT backoff_until FROM run_log WHERE source = ? ORDER BY id DESC LIMIT 10", (source,)
     ).fetchall()
     count = 0
     for row in rows:
-        if row["errors"]:
+        if row["backoff_until"]:
             count += 1
         else:
             break

@@ -556,6 +556,10 @@ async def sources_status(interaction: discord.Interaction):
                     value += f"\n{r['errors'][:200]}"
             elif r["errors"]:
                 value = f"Last attempt failed ({r['finished_at']}):\n{r['errors'][:200]}"
+                if r["n_found"]:
+                    # fetch_*_node keeps whatever it found before the exception --
+                    # a partially-successful run shouldn't read as a total failure.
+                    value += f"\n({r['n_found']} found, {r['n_new']} new, kept despite the error)"
             else:
                 value = f"OK -- {r['finished_at']}\n{r['n_found']} found, {r['n_new']} new"
         embed.add_field(name=common.source_label(r["source"]), value=value[:1024], inline=False)

@@ -174,6 +174,32 @@ def _log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _run_fetch(source: str, label: str, offers: list, fill, query: str | None = None) -> dict:
+    """Shared try/except/else + logging + stats-dict shape for every
+    fetch_*_node below. `fill()` appends into `offers` (declared by the
+    caller -- each source's search_term/location/page nesting differs too
+    much to express generically) and may raise partway through; whatever it
+    already appended before that stays, which is the whole point (a source
+    that dies on its 4th of 5 locations still keeps the first 3). One copy
+    of this instead of five near-identical ones that had already started to
+    drift -- labonneboite used to special-case AccessNotGranted with its own
+    log line here; that class of failure reads fine through the same
+    "failed partway through" message as everything else, since the
+    exception's own text already says what happened."""
+    error = None
+    try:
+        fill()
+    except Exception as e:
+        error = str(e)
+        _log(f"[fetch] {label} -> failed partway through ({e}), keeping {len(offers)} offer(s) already found")
+    else:
+        _log(f"[fetch] {label} -> {len(offers)} results")
+    stat = {"source": source, "n_found": len(offers), "error": error}
+    if query is not None:
+        stat["query"] = query
+    return {"raw_offers": offers, "stats": [stat]}
+
+
 def fetch_jobspy_node(state: DiscoveryState) -> dict:
     backed_off, until = is_backed_off("jobspy")
     if backed_off:
@@ -194,17 +220,14 @@ def fetch_jobspy_node(state: DiscoveryState) -> dict:
     hours_old = JOBSPY_SPARSE_HOURS_OLD if sparse else None
     _log(f"[fetch] JobSpy ({search_terms} @ {', '.join(locations)}"
          f"{', widened window: sparse db' if sparse else ''})...")
-    query = " | ".join(search_terms)
-    try:
-        offers = []
+    offers = []
+
+    def fill():
         for search_term in search_terms:
             for location in locations:
-                offers += sources_jobspy.search_offers(search_term=search_term, location=location, hours_old=hours_old)
-        _log(f"[fetch] JobSpy -> {len(offers)} results")
-        return {"raw_offers": offers, "stats": [{"source": "jobspy", "n_found": len(offers), "error": None, "query": query}]}
-    except Exception as e:
-        _log(f"[fetch] JobSpy -> failed: {e}")
-        return {"raw_offers": [], "stats": [{"source": "jobspy", "n_found": 0, "error": str(e), "query": query}]}
+                offers.extend(sources_jobspy.search_offers(search_term=search_term, location=location, hours_old=hours_old))
+
+    return _run_fetch("jobspy", "JobSpy", offers, fill, query=" | ".join(search_terms))
 
 
 def fetch_lba_node(state: DiscoveryState) -> dict:
@@ -217,15 +240,13 @@ def fetch_lba_node(state: DiscoveryState) -> dict:
         return {"raw_offers": [], "stats": []}
     profile = get_user_profile() or {"target_locations": []}
     _log("[fetch] LBA...")
-    try:
-        offers = []
+    offers = []
+
+    def fill():
         for loc in _resolve_target_locations(profile):
-            offers += sources_lba.search_offers(romes=LBA_ROME_CODES, latitude=loc["lat"], longitude=loc["lon"], radius=30)
-        _log(f"[fetch] LBA -> {len(offers)} results")
-        return {"raw_offers": offers, "stats": [{"source": "lba", "n_found": len(offers), "error": None}]}
-    except Exception as e:
-        _log(f"[fetch] LBA -> failed: {e}")
-        return {"raw_offers": [], "stats": [{"source": "lba", "n_found": 0, "error": str(e)}]}
+            offers.extend(sources_lba.search_offers(romes=LBA_ROME_CODES, latitude=loc["lat"], longitude=loc["lon"], radius=30))
+
+    return _run_fetch("lba", "LBA", offers, fill)
 
 
 ADZUNA_PAGES_PER_LOCATION = int(os.environ.get("ADZUNA_PAGES_PER_LOCATION", "2"))
@@ -241,12 +262,12 @@ def fetch_adzuna_node(state: DiscoveryState) -> dict:
         return {"raw_offers": [], "stats": []}
     profile = get_user_profile() or {"target_roles": [], "target_locations": []}
     queries = _search_terms(profile)
-    joined_query = " | ".join(queries)
     sparse = _is_db_sparse()
     max_days_old = ADZUNA_SPARSE_MAX_DAYS_OLD if sparse else None
     _log(f"[fetch] Adzuna ({queries}{', widened window: sparse db' if sparse else ''})...")
-    try:
-        offers = []
+    offers = []
+
+    def fill():
         for query in queries:
             for loc in _resolve_target_locations(profile):
                 # Page 1 alone caps out at 15 results/location/query regardless
@@ -258,14 +279,11 @@ def fetch_adzuna_node(state: DiscoveryState) -> dict:
                     page_offers = sources_adzuna.search_offers(
                         what=query, where=loc["label"], results_per_page=15, page=page, max_days_old=max_days_old,
                     )
-                    offers += page_offers
+                    offers.extend(page_offers)
                     if len(page_offers) < 15:
                         break
-        _log(f"[fetch] Adzuna -> {len(offers)} results")
-        return {"raw_offers": offers, "stats": [{"source": "adzuna", "n_found": len(offers), "error": None, "query": joined_query}]}
-    except Exception as e:
-        _log(f"[fetch] Adzuna -> failed: {e}")
-        return {"raw_offers": [], "stats": [{"source": "adzuna", "n_found": 0, "error": str(e), "query": joined_query}]}
+
+    return _run_fetch("adzuna", "Adzuna", offers, fill, query=" | ".join(queries))
 
 
 def fetch_francetravail_node(state: DiscoveryState) -> dict:
@@ -278,18 +296,15 @@ def fetch_francetravail_node(state: DiscoveryState) -> dict:
         return {"raw_offers": [], "stats": []}
     profile = get_user_profile() or {"target_roles": [], "target_locations": []}
     queries = _search_terms(profile)
-    joined_query = " | ".join(queries)
     _log(f"[fetch] France Travail ({queries})...")
-    try:
-        offers = []
+    offers = []
+
+    def fill():
         for query in queries:
             for loc in _resolve_target_locations(profile):
-                offers += sources_francetravail.search_offers(mots_cles=query, ville=loc["label"])
-        _log(f"[fetch] France Travail -> {len(offers)} results")
-        return {"raw_offers": offers, "stats": [{"source": "francetravail", "n_found": len(offers), "error": None, "query": joined_query}]}
-    except Exception as e:
-        _log(f"[fetch] France Travail -> failed: {e}")
-        return {"raw_offers": [], "stats": [{"source": "francetravail", "n_found": 0, "error": str(e), "query": joined_query}]}
+                offers.extend(sources_francetravail.search_offers(mots_cles=query, ville=loc["label"]))
+
+    return _run_fetch("francetravail", "France Travail", offers, fill, query=" | ".join(queries))
 
 
 def fetch_labonneboite_node(state: DiscoveryState) -> dict:
@@ -303,18 +318,15 @@ def fetch_labonneboite_node(state: DiscoveryState) -> dict:
         return {"raw_offers": [], "stats": []}
     profile = get_user_profile() or {"target_locations": []}
     _log("[fetch] La Bonne Boite...")
-    try:
-        offers = []
+    offers = []
+
+    def fill():
         for loc in _resolve_target_locations(profile):
-            offers += sources_labonneboite.search_offers(romes=LBA_ROME_CODES, latitude=loc["lat"], longitude=loc["lon"], distance=30)
-        _log(f"[fetch] La Bonne Boite -> {len(offers)} results")
-        return {"raw_offers": offers, "stats": [{"source": "labonneboite", "n_found": len(offers), "error": None}]}
-    except sources_labonneboite.AccessNotGranted as e:
-        _log(f"[fetch] La Bonne Boite -> {e}")
-        return {"raw_offers": [], "stats": [{"source": "labonneboite", "n_found": 0, "error": str(e)}]}
-    except Exception as e:
-        _log(f"[fetch] La Bonne Boite -> failed: {e}")
-        return {"raw_offers": [], "stats": [{"source": "labonneboite", "n_found": 0, "error": str(e)}]}
+            offers.extend(sources_labonneboite.search_offers(
+                romes=LBA_ROME_CODES, latitude=loc["lat"], longitude=loc["lon"], distance=30,
+            ))
+
+    return _run_fetch("labonneboite", "La Bonne Boite", offers, fill)
 
 
 def fetch_ats_node(state: DiscoveryState) -> dict:
@@ -618,11 +630,22 @@ def score_node(state: DiscoveryState) -> dict:
                     infos_entreprise=infos_entreprise,
                 ))
                 score, reason = result.get("score"), result.get("reason")
-                status = "scored"
+                # A syntactically valid JSON reply that's still missing the
+                # "score" key (seen with weaker/local models) must NOT be
+                # marked "scored" -- that status means "score IS NOT NULL"
+                # everywhere else reads it (core/queries.py's list_offers).
+                # Same "scored" if score is not None else "new" convention as
+                # annuler_postule/inclure_offre (chat_agent.py) -- 'new' keeps
+                # it eligible for the next scoring run instead of a one-off
+                # status string most of the app (tools/common.py's
+                # STATUS_LABELS included) has never heard of.
+                status = "scored" if score is not None else "new"
+                if score is None and not reason:
+                    reason = "scoring failed: model response had no 'score' field"
                 score_str = str(score) if score is not None else "?"
                 _log(f"[score] {i}/{total} - [{score_str:>3}] {title} -- {row['company'] or '?'} :: {reason}")
             except Exception as e:
-                score, reason, status = None, f"scoring failed: {e}", "score_failed"
+                score, reason, status = None, f"scoring failed: {e}", "new"
                 _log(f"[score] {i}/{total} - [ERR] {title} -- failed: {e}")
 
             conn.execute(
@@ -753,7 +776,12 @@ def log_run_node(state: DiscoveryState) -> dict:
     with get_connection() as conn:
         for stat in state["stats"]:
             error = stat.get("error")
-            backoff_until = compute_backoff_until(stat["source"], has_error=bool(error))
+            # A non-null error alone isn't a circuit-breaker failure anymore:
+            # fetch_*_node keeps partial results after a mid-loop exception,
+            # so a source that still found something this run shouldn't have
+            # its backoff doubled as if the whole attempt came back empty.
+            has_error = bool(error) and not stat.get("n_found")
+            backoff_until = compute_backoff_until(stat["source"], has_error=has_error)
             if backoff_until:
                 _log(f"[circuit-breaker] {stat['source']} failing -> backed off until {backoff_until}")
             conn.execute(
