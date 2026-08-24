@@ -153,7 +153,7 @@ stays off, nothing breaks.
 | Tech-company career pages (any country) | No | Greenhouse/Ashby/Lever — free, but needs `ATS_WATCHLIST` (or chat) to name companies, no keyword search |
 | Funding-news leads for the ATS watchlist | No | Nothing extra -- free RSS, proposes companies, never adds one on its own |
 | Mail monitoring (reading + draft replies) | No | One or more Gmail accounts |
-| Web search for sharper letters/contacts | No | Self-hosted SearXNG (docker, free) |
+| Web search for sharper letters/contacts | No | Tavily (free up to 1000/month) or self-hosted SearXNG (docker, free) |
 | Company contacts (legal representatives) | No | Pappers — **France only** |
 | Company contacts (verified emails) | No | Hunter.io + Snov.io — free up to 50-100/month |
 
@@ -543,8 +543,19 @@ Without any of this, cover letters still get written, just without company
 enrichment (recent news, what the company actually does). Each piece below
 is independent of the others.
 
-**SearXNG** (web search, self-hosted, free): sharpens letters and contact
-lookups by giving the agent some real context on the company before writing:
+**Web search** sharpens letters and contact lookups by giving the agent some
+real context on the company before writing. Two options, tried in this
+order:
+
+**Tavily** (real search API, no ban risk, free up to 1000 credits/month):
+key on [tavily.com](https://www.tavily.com) in `TAVILY_API_KEY`. Preferred
+whenever it's set.
+
+**SearXNG** (self-hosted, free, fallback): used automatically whenever
+Tavily isn't configured (or is backed off/quota-exhausted). It queries
+Google/Bing/DuckDuckGo/Qwant on your behalf, which carries a real ban risk
+on repeated use -- that's the whole reason Tavily is preferred when
+available.
 
 ```bash
 # once, any random string for SEARXNG_SECRET in .env
@@ -809,7 +820,7 @@ tools/
   sources_funding_news.py — Maddyness/Frenchweb RSS, feeds the ATS watchlist (optional)
   funding_check.py    — turns a funding headline into a watchlist proposal (optional)
   sources_pappers.py, sources_hunter.py, sources_snov.py — contacts (optional)
-  web_search.py       — SearXNG (optional)
+  web_search.py       — Tavily, falling back to SearXNG (optional)
   email_tools.py      — IMAP/SMTP (optional)
   link_check.py       — flags postings whose link has died
   ghost_job.py        — flags a posting that looks like it may not be a real, current opening

@@ -408,8 +408,9 @@ def definir_profil(texte: str) -> str:
 
 @tool
 def rechercher_entreprise(nom_entreprise: str, contexte: str = "") -> str:
-    """Web search (self-hosted SearXNG) on a company, for writing a sharper
-    cover letter (what it actually does, recent news...). contexte = the role
+    """Web search (Tavily, or self-hosted SearXNG as a fallback) on a
+    company, for writing a sharper cover letter (what it actually does,
+    recent news...). contexte = the role
     title or sector, to narrow the query. ONE search is enough per letter,
     don't chain several queries on the same company. Returns an empty string
     (literally) if nothing usable turns up; never treat that as a blocking
@@ -560,7 +561,8 @@ def rechercher_contacts_entreprise(entreprise: str, ville: str = "", offer_id: i
     1. Legal representatives (Pappers, the official French company registry,
        France only), verified names. Pappers provides neither an email nor a
        phone number (a legal registry, not a contact directory).
-    2. Web search (SearXNG) to identify the company's official site.
+    2. Web search (Tavily, or self-hosted SearXNG as a fallback) to identify
+       the company's official site.
     3. Hunter.io (domain search) on that official site, with an automatic
        fallback to Snov.io if Hunter returns nothing (monthly quota
        exhausted or domain not covered): emails that are ACTUALLY VERIFIED,
