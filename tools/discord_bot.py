@@ -710,17 +710,22 @@ class DraftsView(discord.ui.View):
 
 @tree.command(name="drafts", description="Pending reply drafts on the sending account (Gmail)")
 async def drafts_cmd(interaction: discord.Interaction):
-    await interaction.response.defer()
+    # Ephemeral: Send/Delete on these buttons has no per-click owner check
+    # (unlike ConfirmSendView, there's no single "requester" for a draft
+    # already sitting in the shared inbox), so this is the only thing
+    # stopping anyone else who can see the channel from sending/deleting
+    # your drafts via a public message.
+    await interaction.response.defer(ephemeral=True)
     try:
         drafts = await asyncio.get_event_loop().run_in_executor(None, email_tools.lister_brouillons)
     except Exception as e:
         embed = base_embed("Error", color=COLOR_ERROR, description=f"Couldn't read the drafts: {e}")
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
     if not drafts:
         embed = base_embed("Pending drafts", description="No pending draft.")
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
     description = None
@@ -736,7 +741,7 @@ async def drafts_cmd(interaction: discord.Interaction):
             value=f"To {destinataire} -- {d['date']}\n{d['apercu']}"[:1024],
             inline=False,
         )
-    await interaction.followup.send(embed=embed, view=DraftsView(drafts))
+    await interaction.followup.send(embed=embed, view=DraftsView(drafts), ephemeral=True)
 
 
 @tree.command(name="applied", description="Marks a posting as already applied to (drops it from /offers)")
@@ -852,14 +857,25 @@ async def reset_cmd(interaction: discord.Interaction) -> None:
 
 
 class ConfirmSendView(discord.ui.View):
-    """The only path to a real SMTP send: a human click, never the agent alone."""
+    """The only path to a real SMTP send: a human click, never the agent alone.
 
-    def __init__(self, pending_id: str):
+    owner_id gates that click to whoever ran the /ask that proposed this
+    send -- without it, anyone who can see the channel could click "Confirm
+    send" on someone else's proposed email and trigger a real SMTP send,
+    which a code review flagged as undermining this exact guarantee."""
+
+    def __init__(self, pending_id: str, owner_id: str):
         super().__init__(timeout=3600)
         self.pending_id = pending_id
+        self.owner_id = owner_id
 
     @discord.ui.button(label="Confirm send", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if str(interaction.user.id) != self.owner_id:
+            await interaction.response.send_message(
+                "Only the person who asked for this send can confirm it.", ephemeral=True,
+            )
+            return
         result = await asyncio.get_event_loop().run_in_executor(
             None, execute_pending_send, self.pending_id,
         )
@@ -959,7 +975,7 @@ async def ask(interaction: discord.Interaction, text: str):
         await interaction.followup.send(embed=embed)
         return
     new = set(PENDING_SENDS.keys()) - before
-    view = ConfirmSendView(next(iter(new))) if new else None
+    view = ConfirmSendView(next(iter(new)), str(interaction.user.id)) if new else None
     chunks = chunk_message(reponse or "(empty reply)")
     for i, chunk in enumerate(chunks):
         kwargs = {"view": view} if (view is not None and i == len(chunks) - 1) else {}
