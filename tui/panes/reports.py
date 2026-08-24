@@ -77,13 +77,12 @@ class ReportsPane(Vertical):
             )
 
     def _refresh_quotas(self) -> None:
-        from core.api_usage import quota_summary
+        from core.api_usage import QUOTA_LABELS, quota_summary
 
-        labels = {"adzuna": "Adzuna", "hunter": "Hunter.io", "snov": "Snov.io"}
         table = self.query_one("#quotas-table", DataTable)
         table.clear()
         for q in quota_summary():
-            table.add_row(labels.get(q["source"], q["source"]), str(q["used"]), str(q["limit"]), str(q["remaining"]))
+            table.add_row(QUOTA_LABELS.get(q["source"], q["source"]), str(q["used"]), str(q["limit"]), str(q["remaining"]))
 
     def _refresh_log(self) -> None:
         from core import queries

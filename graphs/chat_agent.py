@@ -532,17 +532,17 @@ def verifier_actus_levees_de_fonds() -> str:
 
 @tool
 def quotas_api_restants() -> str:
-    """Shows this month's usage for the 3 APIs with a limited free quota
-    (Adzuna: 2500 searches/month, Hunter.io and Snov.io: 50 credits/month
-    each, 1 credit per domain search) -- check this before running a lot of
+    """Shows this month's usage for every quota-limited API actually
+    configured (Adzuna, Hunter.io, Snov.io, Pappers, Tavily -- whichever of
+    these have a key set in .env) -- check this before running a lot of
     one-off searches or company contact lookups in a row, to avoid finding
     out the quota's exhausted after the fact."""
-    from core.api_usage import quota_summary
+    from core.api_usage import QUOTA_LABELS, quota_summary
     lines = []
     for q in quota_summary():
-        label = {"adzuna": "Adzuna", "hunter": "Hunter.io", "snov": "Snov.io"}.get(q["source"], q["source"])
+        label = QUOTA_LABELS.get(q["source"], q["source"])
         lines.append(f"{label}: {q['used']}/{q['limit']} used this month ({q['remaining']} remaining)")
-    return "\n".join(lines)
+    return "\n".join(lines) or "No quota-limited API configured."
 
 
 _DOMAIN_SKIP = ("linkedin.com", "societe.com", "pappers.fr", "indeed.com", "google.com",

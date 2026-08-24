@@ -633,14 +633,17 @@ async def notifications_cmd(interaction: discord.Interaction, limit: app_command
     await interaction.response.send_message(embed=embed)
 
 
-@tree.command(name="quotas", description="This month's usage for quota-limited APIs (Adzuna, Hunter.io, Snov.io)")
+@tree.command(name="quotas", description="This month's usage for quota-limited APIs (Adzuna, Hunter.io, Snov.io, Pappers, Tavily)")
 async def quotas(interaction: discord.Interaction):
-    from core.api_usage import quota_summary
+    from core.api_usage import QUOTA_LABELS, quota_summary
 
-    labels = {"adzuna": "Adzuna", "hunter": "Hunter.io", "snov": "Snov.io"}
-    embed = base_embed("This month's API quotas")
-    for q in quota_summary():
-        label = labels.get(q["source"], q["source"])
+    summary = quota_summary()
+    embed = base_embed(
+        "This month's API quotas",
+        description="No quota-limited API configured." if not summary else None,
+    )
+    for q in summary:
+        label = QUOTA_LABELS.get(q["source"], q["source"])
         exhausted = " (exhausted)" if q["remaining"] <= 0 else ""
         embed.add_field(
             name=label,

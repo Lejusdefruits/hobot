@@ -1,13 +1,17 @@
-"""Web search via a self-hosted SearXNG instance -- used ONLY to enrich cover
-letters with real information about the company (what it does, recent news,
-...), never bulk scraping.
+"""Web search for company enrichment (cover letters, /ask lookups) -- Tavily
+if TAVILY_API_KEY is set, a self-hosted SearXNG instance otherwise. Used ONLY
+to enrich cover letters with real information about the company (what it
+does, recent news, ...), never bulk scraping.
 
-Anti-ban: SearXNG queries Google/Bing/DuckDuckGo/Qwant on our behalf. No
-pagination, no repeated queries for the same company (one letter = one
-search), a short timeout, and the same per-source circuit breaker as the
-other connectors (core/circuit_breaker.py): if a query fails, back off
-instead of pushing harder -- never an exception that propagates to the
-caller, a failed search should never block writing the letter.
+Tavily is a real, paid-by-credit search API: no ban risk, so it's tried
+FIRST whenever configured (1000 free credits/month, see core/api_usage.py).
+SearXNG is the fallback for whoever hasn't set a Tavily key -- but it queries
+Google/Bing/DuckDuckGo/Qwant *on our behalf*, which carries a real ban risk
+on repeated use. The anti-ban rules below (no pagination, no repeated
+queries for the same company, short timeout, circuit breaker) matter for
+that path specifically; Tavily doesn't need them for the same reason it
+doesn't need them anywhere else client code calls it. Either way: a failed
+search should never block writing the letter, so nothing here ever raises.
 """
 import os
 from pathlib import Path
@@ -15,36 +19,67 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+from core.api_usage import has_quota, log_call
 from core.circuit_breaker import compute_backoff_until, is_backed_off
 from core.db import get_connection
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
+TAVILY_TIMEOUT = int(os.environ.get("TAVILY_TIMEOUT_SECONDS", "10"))
+
 SEARXNG_HOST = os.environ.get("SEARXNG_HOST", "http://localhost:8888")
 TIMEOUT = int(os.environ.get("SEARXNG_TIMEOUT_SECONDS", "10"))
 MAX_RESULTS = 3
 
-SOURCE = "searxng"
 
-
-def _log(n_found: int, error: str | None) -> None:
-    backoff_until = compute_backoff_until(SOURCE, has_error=bool(error))
+def _log(source: str, n_found: int, error: str | None) -> None:
+    backoff_until = compute_backoff_until(source, has_error=bool(error))
     with get_connection() as conn:
         conn.execute(
             """INSERT INTO run_log (run_type, source, finished_at, n_found, n_new, errors, backoff_until)
                VALUES ('web_search', ?, datetime('now'), ?, 0, ?, ?)""",
-            (SOURCE, n_found, error, backoff_until),
+            (source, n_found, error, backoff_until),
         )
 
 
-def search(query: str) -> list[dict]:
-    """One SearXNG query, raw results (title/url/content). Empty list if
-    nothing found, SearXNG is backed off (circuit breaker), or on failure --
-    never an exception."""
-    if not query.strip():
-        return []
-    backed_off, _until = is_backed_off(SOURCE)
-    if backed_off:
+def _normalize(results: list[dict]) -> list[dict]:
+    return [{"title": r.get("title"), "url": r.get("url"), "content": r.get("content")} for r in results[:MAX_RESULTS]]
+
+
+def _tavily_available() -> bool:
+    return bool(TAVILY_API_KEY) and not is_backed_off("tavily")[0] and has_quota("tavily")
+
+
+def _search_tavily(query: str) -> list[dict] | None:
+    """None if Tavily couldn't answer this query at all (caller falls back
+    to SearXNG in that case) -- a list (possibly empty) means the call
+    completed, and an empty answer is a real "nothing found," not a reason
+    to fall through to the bannable SearXNG path."""
+    try:
+        resp = requests.post(
+            "https://api.tavily.com/search",
+            headers={"Authorization": f"Bearer {TAVILY_API_KEY}"},
+            json={"query": query, "max_results": MAX_RESULTS},
+            timeout=TAVILY_TIMEOUT,
+        )
+    except Exception as e:
+        # Never sent / no response -- no credit burned, nothing to log_call for.
+        _log("tavily", 0, str(e))
+        return None
+    log_call("tavily")  # a response came back, credit spent whether or not the query succeeded
+    try:
+        resp.raise_for_status()
+        results = _normalize(resp.json().get("results", []))
+    except Exception as e:
+        _log("tavily", 0, str(e))
+        return None
+    _log("tavily", len(results), None)
+    return results
+
+
+def _search_searxng(query: str) -> list[dict]:
+    if is_backed_off("searxng")[0]:
         return []
     try:
         resp = requests.get(
@@ -53,15 +88,26 @@ def search(query: str) -> list[dict]:
             timeout=TIMEOUT,
         )
         resp.raise_for_status()
-        results = resp.json().get("results", [])[:MAX_RESULTS]
-        _log(len(results), None)
-        return [
-            {"title": r.get("title"), "url": r.get("url"), "content": r.get("content")}
-            for r in results
-        ]
+        results = _normalize(resp.json().get("results", []))
+        _log("searxng", len(results), None)
+        return results
     except Exception as e:
-        _log(0, str(e))
+        _log("searxng", 0, str(e))
         return []
+
+
+def search(query: str) -> list[dict]:
+    """One query, raw results (title/url/content). Empty list if nothing
+    found or on failure -- never an exception. Tavily first when configured
+    and usable; SearXNG only as a fallback (unconfigured/backed-off/quota-
+    exhausted Tavily, or a Tavily call that actually failed)."""
+    if not query.strip():
+        return []
+    if _tavily_available():
+        results = _search_tavily(query)
+        if results is not None:
+            return results
+    return _search_searxng(query)
 
 
 def search_company(company: str, hint: str = "") -> str:
