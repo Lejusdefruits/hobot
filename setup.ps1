@@ -65,7 +65,7 @@ function Invoke-Step {
     Remove-Item $outLog, $errLog -ErrorAction SilentlyContinue
 }
 
-Write-Step 1 4 "Checking for Python 3.10+"
+Write-Step 1 5 "Checking for Python 3.10+"
 $python = Get-Command python -ErrorAction SilentlyContinue
 if (-not $python) {
     Write-Error "python not found -- install Python 3.10+ from python.org first (check 'Add python.exe to PATH' during install)."
@@ -79,7 +79,7 @@ if ([int]$major -lt 3 -or ([int]$major -eq 3 -and [int]$minor -lt 10)) {
 }
 Write-Done "Python $versionOutput"
 
-Write-Step 2 4 "Setting up a virtual environment"
+Write-Step 2 5 "Setting up a virtual environment"
 Write-Host "Keeps hobot's dependencies out of your system Python -- lives in .\.venv, only used from inside this project." -ForegroundColor DarkGray
 if (Test-Path .venv) {
     Write-Host "  .venv already exists, left as is." -ForegroundColor DarkGray
@@ -87,7 +87,7 @@ if (Test-Path .venv) {
     Invoke-Step "creating .venv" python @("-m", "venv", ".venv")
 }
 
-Write-Step 3 4 "Installing dependencies"
+Write-Step 3 5 "Installing dependencies"
 Write-Host "Everything in requirements.txt -- discord.py, textual, langgraph, and the rest." -ForegroundColor DarkGray
 # python -m pip, not pip.exe directly -- upgrading pip by running pip.exe
 # means replacing that same .exe while Windows still has it open, which can
@@ -95,12 +95,19 @@ Write-Host "Everything in requirements.txt -- discord.py, textual, langgraph, an
 Invoke-Step "upgrading pip" .venv\Scripts\python.exe @("-m", "pip", "install", "--upgrade", "pip")
 Invoke-Step "installing from requirements.txt" .venv\Scripts\pip.exe @("install", "-r", "requirements.txt")
 
-Write-Step 4 4 "Preparing .env"
+Write-Step 4 5 "Preparing .env"
 if (Test-Path .env) {
     Write-Host "  .env already exists, left untouched." -ForegroundColor DarkGray
 } else {
     Copy-Item .env.example .env
     Write-Done "copied .env.example to .env"
+}
+
+Write-Step 5 5 "Guided setup"
+if (-not [Console]::IsInputRedirected) {
+    & .venv\Scripts\python.exe scripts\install_wizard.py
+} else {
+    Write-Host "  non-interactive install, skipping -- edit .env by hand (see README.md)." -ForegroundColor DarkGray
 }
 
 Write-Host ""

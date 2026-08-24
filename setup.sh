@@ -16,7 +16,7 @@ fi
 INTERACTIVE=0
 [ -t 1 ] && INTERACTIVE=1
 
-TOTAL_STEPS=4
+TOTAL_STEPS=5
 STEP=0
 
 step() {
@@ -95,6 +95,13 @@ if [ -f .env ]; then
 else
     cp .env.example .env
     printf '  %s%s%s copied .env.example to .env\n' "$GREEN" "done" "$RESET"
+fi
+
+step "Guided setup"
+if [ -t 0 ]; then
+    .venv/bin/python scripts/install_wizard.py
+else
+    echo "  ${DIM}non-interactive install, skipping -- edit .env by hand (see README.md).${RESET}"
 fi
 
 cat <<EOF
