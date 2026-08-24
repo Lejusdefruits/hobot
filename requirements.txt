@@ -18,3 +18,4 @@ python-docx
 docxtpl
 fonttools
 textual
+psutil

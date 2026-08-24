@@ -339,12 +339,9 @@ class OfferDetailScreen(ModalScreen[str | None]):
     def _open_url(self, url: str | None) -> None:
         if not url:
             return
-        import webbrowser
-        try:
-            if not webbrowser.open(url):
-                self.notify("Couldn't find a browser to open the link with.", severity="error")
-        except Exception as e:
-            self.notify(f"Couldn't open the link: {e}", severity="error")
+        from core.browser import open_url
+        if not open_url(url):
+            self.notify("Couldn't find a browser to open the link with.", severity="error")
 
     def action_close(self) -> None:
         self.dismiss("changed" if self._changed else None)
