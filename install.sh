@@ -3,7 +3,18 @@
 # setup.sh for the venv/dependencies/.env part. Meant to be run straight from
 # GitHub, no local checkout needed first:
 #
-#   curl -fsSL https://raw.githubusercontent.com/Lejusdefruits/hobot/main/install.sh | bash
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Lejusdefruits/hobot/main/install.sh)"
+#
+# bash -c "$(curl ...)" on purpose, not `curl ... | bash`: a plain pipe feeds
+# this script's own text into stdin, so by the time setup.sh's guided-setup
+# step wants to prompt interactively, stdin is the (already-exhausted) pipe
+# instead of the real terminal -- setup.sh's own [ -t 0 ] check then correctly
+# concludes it can't prompt, and skips the guided step even though a person is
+# genuinely sitting at the terminal running this command. `bash -c` runs the
+# already-fully-fetched script as a command string in a normal bash process
+# instead, whose stdin is simply the caller's own, unrelated to the script
+# text -- the same invocation style Homebrew's installer uses for the same
+# reason.
 #
 # Set HOBOT_DIR to clone somewhere other than ./hobot.
 set -euo pipefail

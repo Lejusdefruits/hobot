@@ -38,7 +38,7 @@ a drop-in alternative if you'd rather not run a model locally.
 ## Quick start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Lejusdefruits/hobot/main/install.sh | bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Lejusdefruits/hobot/main/install.sh)"
 ```
 
 Windows (PowerShell):
@@ -63,8 +63,10 @@ monitoring, web search, company contacts...) to turn on now versus later,
 opening each one's signup page on request, and finally offers to start the
 daemon automatically at login. Nothing here is final: skip anything, and
 fill in or change `.env` by hand whenever. It only runs in a real terminal --
-the piped one-liner above stays fully non-interactive and skips straight to
-"Base install done."
+running the one-liner above by hand still prompts normally (`bash -c
+"$(curl ...)"` never occupies stdin with the script itself, unlike a plain
+`curl ... | bash`); piping it into something non-interactive instead (CI, a
+script, `| cat`) skips straight to "Base install done." without prompting.
 
 Open `.env` yourself instead to fill in anything skipped above -- the
 `REQUIRED` block at the top is an LLM, Ollama by default (nothing to pay
