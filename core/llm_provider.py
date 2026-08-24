@@ -39,11 +39,11 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "20000"))
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL") or None  # override to hit any OpenAI-compatible endpoint
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
 
 
 @lru_cache(maxsize=None)

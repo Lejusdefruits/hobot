@@ -221,16 +221,24 @@ with no other code path affected. Set in `.env`:
 ```bash
 LLM_PROVIDER=openai            # or: anthropic
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o-mini       # any OpenAI model with tool-calling support
+OPENAI_MODEL=gpt-5-mini        # any OpenAI model with tool-calling support
 OPENAI_BASE_URL=               # optional: OpenRouter/Groq/any OpenAI-compatible endpoint instead of OpenAI itself
 ```
+
+Groq specifically (an OpenAI-compatible endpoint, free tier available):
+`OPENAI_BASE_URL=https://api.groq.com/openai/v1`, with a tool-calling model
+from Groq's current lineup (`openai/gpt-oss-120b` verified working end to
+end -- scoring, tool calls, and everything else this project's LLM calls
+need -- against Groq's own `/v1/models`; check
+[console.groq.com/docs/models](https://console.groq.com/docs/models) since
+that lineup changes more often than OpenAI's or Anthropic's).
 
 or, for Anthropic:
 
 ```bash
 LLM_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
-ANTHROPIC_MODEL=claude-sonnet-4-5-20250929
+ANTHROPIC_MODEL=claude-sonnet-5
 ```
 
 `LLM_PROVIDER=ollama` (the default) ignores both blocks entirely -- there's
