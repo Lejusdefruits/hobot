@@ -3,6 +3,8 @@ against fabricated data in a throwaway db -- never hobot.db or checkpoints.db,
 which may hold real job-search data (see the HOBOT_DB_PATH /
 HOBOT_CHECKPOINT_DB_PATH / HOBOT_OUTPUT_DIR overrides below, all read by
 core/db.py, graphs/chat_agent.py, and tools/documents.py respectively).
+tools.email_tools.lister_brouillons is monkeypatched to fabricated drafts
+for the same reason -- the Drafts tab never touches a real inbox here.
 
 Textual's App.export_screenshot() gives one SVG frame per moment; each is
 rasterized to PNG and ffmpeg assembles the sequence into a paletted GIF.
@@ -14,7 +16,12 @@ dependencies already in requirements.txt):
 Two things beyond requirements.txt, neither added to it since nothing at
 runtime needs them: ffmpeg (must already be on PATH) and cairosvg (installed
 here into a throwaway venv, not .venv, and discarded after the run).
-"""
+
+Covers all seven tabs (Status, Offers + offer detail, Applications, Drafts,
+Profile, Chat, Reports) -- Quotas/Sources under Reports reflect whichever
+APIs are actually configured in the real .env this script runs against
+(the demo db's own api_calls/run_log rows below are fabricated, the
+"configured or not" flag per source isn't)."""
 import asyncio
 import json
 import os
@@ -46,8 +53,9 @@ GIF_FPS = 10
 
 
 def seed() -> int:
-    """Fabricated profile/offers/letter -- nothing here is real applicant
-    data. Returns the id of the offer a letter gets generated for."""
+    """Fabricated profile/offers/applications/run history/letter -- nothing
+    here is real applicant data. Returns the id of the offer a letter gets
+    generated for (the one the Offers tab opens in the demo)."""
     from core.db import get_connection, init_db
 
     init_db()
@@ -77,32 +85,58 @@ def seed() -> int:
             "VALUES ('discovery', 'jobspy', ?, ?, 34, 6, 'backend developer')",
             (fmt(now - timedelta(minutes=12)), fmt(now - timedelta(minutes=9))),
         )
+        # A healthy source and a partially-failed-but-still-useful one (kept
+        # results despite a mid-run error) side by side in the Sources tab.
+        conn.execute(
+            "INSERT INTO run_log (run_type, source, started_at, finished_at, n_found, n_new, query) "
+            "VALUES ('discovery', 'adzuna', ?, ?, 21, 4, 'backend developer | full-stack developer')",
+            (fmt(now - timedelta(minutes=11)), fmt(now - timedelta(minutes=8))),
+        )
+        conn.execute(
+            "INSERT INTO run_log (run_type, source, started_at, finished_at, n_found, n_new, errors, query) "
+            "VALUES ('discovery', 'francetravail', ?, ?, 8, 2, 'timed out on page 3 of 4', "
+            "'backend developer | full-stack developer')",
+            (fmt(now - timedelta(minutes=10)), fmt(now - timedelta(minutes=7))),
+        )
+        # A few API calls this month so the Quotas tab isn't all zeros.
+        for source, n in (("adzuna", 14), ("hunter", 3), ("tavily", 6)):
+            conn.executemany(
+                "INSERT INTO api_calls (source) VALUES (?)", [(source,)] * n,
+            )
 
         offers = [
             ("Backend Developer (Python)", "Northwind Analytics", "Lyon, France", 91,
              "Strong overlap on Python/FastAPI/PostgreSQL, target city matches, seniority matches.",
              "Team of 12 building a data platform for retail clients. Python/FastAPI backend, "
-             "PostgreSQL, Docker, some Kubernetes exposure appreciated but not required."),
+             "PostgreSQL, Docker, some Kubernetes exposure appreciated but not required.",
+             "scored", None),
             ("Backend Developer (Django)", "Solenne Health", "Lyon, France", 88,
              "Same target role, target city, and most required skills already in the profile.",
-             "Healthtech scale-up, Django REST framework, PostgreSQL, strong test culture."),
+             "Healthtech scale-up, Django REST framework, PostgreSQL, strong test culture.",
+             "applied", fmt(now - timedelta(days=2))),
             ("Full-Stack Engineer", "Marelio", "Remote (France)", 84,
              "Good skills overlap, remote matches target locations, slightly junior on React.",
-             "Small product team, Django + React, looking for someone comfortable across the stack."),
+             "Small product team, Django + React, looking for someone comfortable across the stack.",
+             "scored", None),
             ("Site Reliability Engineer", "Klarion Cloud", "Lyon, France", 76,
              "Backend skills transfer well, but the role leans more ops/infra than the target roles.",
-             "On-call rotation, Kubernetes, Terraform, Python tooling for internal platform teams."),
+             "On-call rotation, Kubernetes, Terraform, Python tooling for internal platform teams.",
+             "scored", None),
             ("Data Engineer", "Ferrand & Co", "Villeurbanne, France", 68,
              "Some Python overlap, but the core stack (Spark, Airflow) isn't in the profile.",
-             "ETL pipelines for a mid-size retailer, Airflow, Spark, dbt."),
+             "ETL pipelines for a mid-size retailer, Airflow, Spark, dbt.",
+             "scored", None),
             ("Frontend Developer (React)", "Aubade Studio", "Remote (EU)", 54,
              "Role is React-only; profile is backend-leaning, so overlap is partial.",
-             "Marketing sites and internal tools in React/TypeScript, fully remote."),
+             "Marketing sites and internal tools in React/TypeScript, fully remote.",
+             "scored", None),
             ("Platform Engineer", "Vezelay Systems", "Lyon, France", None, None,
-             "Internal developer platform team, Go and Python, Kubernetes-heavy."),
+             "Internal developer platform team, Go and Python, Kubernetes-heavy.",
+             "new", None),
         ]
         top_offer_id = None
-        for i, (title, company, location, score, reason, desc) in enumerate(offers):
+        applied_offer_id = None
+        for i, (title, company, location, score, reason, desc, status, sent_at) in enumerate(offers):
             first_seen = fmt(now - timedelta(hours=i * 3 + 1))
             cur = conn.execute(
                 "INSERT INTO offers (source, url_hash, dedup_key, url, title, company, location, "
@@ -111,11 +145,17 @@ def seed() -> int:
                 (
                     "jobspy", f"demo-hash-{i}", f"{company.lower()}|{title.lower()}",
                     "https://example.invalid/job/" + str(i), title, company, location, desc, score, reason,
-                    "scored" if score is not None else "new", first_seen, first_seen,
+                    status, first_seen, first_seen,
                 ),
             )
             if i == 0:
                 top_offer_id = cur.lastrowid
+            elif status == "applied":
+                applied_offer_id = cur.lastrowid
+                conn.execute(
+                    "INSERT INTO applications (offer_id, status, sent_at) VALUES (?, 'applied', ?)",
+                    (applied_offer_id, sent_at),
+                )
 
     from tools.documents import generate_letter_pdf
 
@@ -137,11 +177,30 @@ def seed() -> int:
     return top_offer_id
 
 
+def _fake_drafts() -> list[dict]:
+    return [
+        {
+            "uid": "1042", "destinataire": "talent@marelio.example", "sujet": "Re: Full-Stack Engineer",
+            "apercu": "Thanks for reaching out -- I'd love to learn more about the role and the stack...",
+            "date": "2026-08-22 09:14",
+        },
+        {
+            "uid": "1039", "destinataire": "hr@klarioncloud.example", "sujet": "Re: Site Reliability Engineer",
+            "apercu": "Following up on the on-call rotation question from your posting...",
+            "date": "2026-08-21 17:02",
+        },
+    ]
+
+
 async def record() -> list[tuple[Path, float]]:
     """Returns [(svg_path, hold_seconds), ...] in display order."""
-    from textual.widgets import DataTable
+    from textual.widgets import Button, DataTable, TabbedContent
+
+    from tools import email_tools
+    email_tools.lister_brouillons = lambda *a, **k: _fake_drafts()
 
     from tui.app import HobotApp
+    from tui.panes.reports import ReportsPane
 
     moments: list[tuple[Path, float]] = []
 
@@ -153,11 +212,11 @@ async def record() -> list[tuple[Path, float]]:
     app = HobotApp()
     async with app.run_test(size=FRAME_SIZE) as pilot:
         await pilot.pause(0.3)
-        snap(app, 2.4)  # Status: daemon "running", discovery schedule
+        snap(app, 2.2)  # Status: daemon "running", discovery schedule
 
         await pilot.press("f2")
         await pilot.pause(0.3)
-        snap(app, 2.2)  # Offers: scored postings, best first
+        snap(app, 2.0)  # Offers: scored postings, best first
 
         # action_show_tab() clears focus on every switch (tui/app.py) and
         # OffersPane doesn't reclaim it the way ChatPane does -- without this,
@@ -170,9 +229,32 @@ async def record() -> list[tuple[Path, float]]:
         # off it.
         await pilot.press("enter")
         await pilot.pause(0.4)
-        snap(app, 3.0)  # Offer detail: description, score reason, generated letter
+        snap(app, 2.2)  # Offer detail: description, score reason, generated letter
+
+        await pilot.press("down")
+        await pilot.press("down")
+        await pilot.press("down")
+        await pilot.pause(0.2)
+        snap(app, 1.6)  # Offer detail, scrolled down via keyboard
 
         await pilot.press("escape")
+        await pilot.press("f3")
+        await pilot.pause(0.3)
+        snap(app, 2.0)  # Applications: sent + drafted, status and date
+
+        await pilot.press("f4")
+        await pilot.pause(0.6)  # drafts fetch runs in a worker thread, needs a beat longer
+        snap(app, 2.0)  # Drafts: pending reply drafts on the sending account
+
+        await pilot.press("f5")
+        await pilot.pause(0.3)
+        snap(app, 1.6)  # Profile: current name/skills/target roles/locations
+
+        await pilot.click(app.query_one("#edit-profile", Button))
+        await pilot.pause(0.2)
+        snap(app, 2.0)  # Profile: inline edit form (no popup, see tui/panes/profile.py)
+
+        await pilot.click(app.query_one("#cancel-profile-edit", Button))
         await pilot.press("f6")
         await pilot.pause(0.3)
         snap(app, 1.0)  # Chat: empty input
@@ -183,7 +265,16 @@ async def record() -> list[tuple[Path, float]]:
             if i % 2 == 1 or i == len(message) - 1:
                 snap(app, 0.2)  # snapshot every other keystroke -- still reads as live typing, half the frames
         await pilot.pause(0.3)
-        snap(app, 2.0)  # Chat: typed question, not sent (no LLM call)
+        snap(app, 1.8)  # Chat: typed question, not sent (no LLM call)
+
+        await pilot.press("f7")
+        await pilot.pause(0.3)
+        snap(app, 2.2)  # Reports > Sources: per-source config/backoff/last-run status
+
+        reports_tabs = app.query_one(ReportsPane).query_one(TabbedContent)
+        reports_tabs.active = "tab-quotas"
+        await pilot.pause(0.3)
+        snap(app, 2.2)  # Reports > Quotas: this month's usage per API
 
     return moments
 

@@ -766,7 +766,7 @@ mirror something a Reports/Status/Drafts pane shows at a glance there:
 | `/strategy` | Search keyword currently in use for each discovery source |
 | `/log` | Recent history of discovery runs (keywords searched, results found) |
 | `/notifications` | History of notifications sent (postings, mail, digest, cleanup) |
-| `/quotas` | This month's usage for quota-limited APIs (Adzuna, Hunter.io, Snov.io) |
+| `/quotas` | This month's usage for quota-limited APIs (Adzuna, Hunter.io, Snov.io, Pappers, Tavily) |
 | `/drafts` | Pending reply drafts on the sending account (Gmail) |
 | `/gaps` | AI analysis of the gaps that show up most often in poorly-scored postings |
 | `/digest` | Triggers the weekly digest right now (summary of the week) |
