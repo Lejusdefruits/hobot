@@ -195,6 +195,13 @@ slow CPU-only if you have the RAM and patience for that; a lighter
 tool-calling model (see the note below) is the better fit for more modest
 hardware. See [Platforms](#platforms) for what else differs by OS.
 
+On Windows specifically: install Python from
+[python.org](https://python.org), not the Microsoft Store version --
+`setup.ps1` detects and refuses the Store one automatically (`python`
+resolving under `WindowsApps`), since it's sandboxed in a way that makes
+`python -m venv` fail, often with no error message at all. Check "Add
+python.exe to PATH" during the python.org install.
+
 The guided setup wizard (last step of `setup.sh`/`setup.ps1`) checks this for
 you -- a RAM-only check (`HOBOT_MIN_RAM_GB_COMFORTABLE`/`_MARGINAL` in
 `.env`, 16/8 GB by default; GPU is detected and shown but doesn't affect the

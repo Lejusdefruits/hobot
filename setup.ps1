@@ -74,7 +74,18 @@ function Invoke-Step {
     } else {
         if ($UseColor) { Write-Host "  failed " -ForegroundColor Red -NoNewline } else { Write-Host "  failed " -NoNewline }
         Write-Host $Message
-        Get-Content $outLog, $errLog -ErrorAction SilentlyContinue | Write-Host
+        $logContent = Get-Content $outLog, $errLog -ErrorAction SilentlyContinue
+        if ($logContent) {
+            $logContent | Write-Host
+        } else {
+            # No stdout/stderr captured at all despite a non-zero exit --
+            # notable on its own (a real Python/pip failure is normally
+            # verbose), most often seen with the Microsoft Store's Python
+            # (an app execution alias, not a real executable, whose
+            # subprocess I/O doesn't always forward the way a normal .exe's
+            # does) -- the exit code is at least something to go on.
+            Write-Host "  (no output was captured -- process exit code $($proc.ExitCode))" -ForegroundColor DarkGray
+        }
         Remove-Item $outLog, $errLog -ErrorAction SilentlyContinue
         exit 1
     }
@@ -86,6 +97,18 @@ try {
     $python = Get-Command python -ErrorAction SilentlyContinue
     if (-not $python) {
         Write-Failure "python not found -- install Python 3.10+ from python.org first (check 'Add python.exe to PATH' during install)."
+        exit 1
+    }
+    if ($python.Source -like "*WindowsApps*") {
+        # The Microsoft Store's Python is an app execution alias, not a
+        # real .exe -- it runs code fine (the version check right below
+        # this still passes), but it's sandboxed in ways that make venv
+        # creation fail, often with no useful error message at all (see
+        # Invoke-Step's own fallback for that symptom). Catching it here,
+        # before wasting time on a clone/pip install that would just hit
+        # the same wall two steps later with a much more confusing failure.
+        Write-Failure "python resolves to the Microsoft Store version ($($python.Source)) -- that one is sandboxed and often can't create a working virtual environment."
+        Write-Host "Install Python from https://python.org instead (check 'Add python.exe to PATH' during install), open a new PowerShell window, and run this again."
         exit 1
     }
     $versionOutput = & python -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"
