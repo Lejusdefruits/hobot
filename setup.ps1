@@ -134,7 +134,18 @@ try {
     if (Test-Path .venv) {
         Write-Host "  .venv already exists, left as is." -ForegroundColor DarkGray
     } else {
-        Invoke-Step "creating .venv" python @("-m", "venv", ".venv")
+        # $python.Source (the absolute path step 1 already resolved and
+        # validated above), not the bare "python" name: Start-Process's own
+        # -FilePath resolution for a bare command name doesn't necessarily
+        # match PowerShell's own (the "&" call operator used for the version
+        # check two lines above) -- confirmed on a real machine with both a
+        # real python.org install and the Microsoft Store's alias stub on
+        # PATH: typing "python" directly, and "& python", both correctly
+        # picked the real install, but Start-Process -FilePath "python" here
+        # did not, silently producing an empty exit code and no output
+        # instead of a working venv. The explicit path sidesteps the
+        # ambiguity entirely.
+        Invoke-Step "creating .venv" $python.Source @("-m", "venv", ".venv")
     }
 
     Write-Step 3 5 "Installing dependencies"
