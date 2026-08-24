@@ -250,12 +250,16 @@ OPENAI_BASE_URL=               # optional: OpenRouter/Groq/any OpenAI-compatible
 ```
 
 Groq specifically (an OpenAI-compatible endpoint, free tier available):
-`OPENAI_BASE_URL=https://api.groq.com/openai/v1`, with a tool-calling model
-from Groq's current lineup (`openai/gpt-oss-120b` verified working end to
-end -- scoring, tool calls, and everything else this project's LLM calls
-need -- against Groq's own `/v1/models`; check
-[console.groq.com/docs/models](https://console.groq.com/docs/models) since
-that lineup changes more often than OpenAI's or Anthropic's).
+`OPENAI_BASE_URL=https://api.groq.com/openai/v1` **and** `OPENAI_MODEL=openai/gpt-oss-120b`
+-- both, not just the base URL: Groq doesn't serve OpenAI's own models, so
+leaving `OPENAI_MODEL` at `gpt-5-mini` from the snippet above fails with a
+model-not-found error the first time it's actually called. `openai/gpt-oss-120b`
+is verified working end to end -- scoring, tool calls, and everything else
+this project's LLM calls need -- against Groq's own `/v1/models`; check
+[console.groq.com/docs/models](https://console.groq.com/docs/models) if it
+ever stops working, since Groq's lineup changes more often than OpenAI's or
+Anthropic's. (The guided setup wizard sets both automatically if you pick
+Groq there instead of editing `.env` by hand.)
 
 or, for Anthropic:
 
