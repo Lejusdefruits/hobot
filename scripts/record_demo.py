@@ -231,11 +231,9 @@ async def record() -> list[tuple[Path, float]]:
         await pilot.pause(0.4)
         snap(app, 2.2)  # Offer detail: description, score reason, generated letter
 
-        await pilot.press("down")
-        await pilot.press("down")
-        await pilot.press("down")
+        await pilot.press("pagedown")
         await pilot.pause(0.2)
-        snap(app, 1.6)  # Offer detail, scrolled down via keyboard
+        snap(app, 1.8)  # Offer detail, scrolled to the bottom via keyboard -- reveals the action buttons
 
         await pilot.press("escape")
         await pilot.press("f3")
@@ -264,17 +262,21 @@ async def record() -> list[tuple[Path, float]]:
             await pilot.press("space" if ch == " " else ch)
             if i % 2 == 1 or i == len(message) - 1:
                 snap(app, 0.2)  # snapshot every other keystroke -- still reads as live typing, half the frames
-        await pilot.pause(0.3)
-        snap(app, 1.8)  # Chat: typed question, not sent (no LLM call)
+        await pilot.pause(0.2)
+        snap(app, 0.9)  # Chat: typed question, not sent (no LLM call) -- brief, not a lingering shot
 
         await pilot.press("f7")
         await pilot.pause(0.3)
-        snap(app, 2.2)  # Reports > Sources: per-source config/backoff/last-run status
+        snap(app, 2.8)  # Reports > Sources: per-source config/backoff/last-run status
 
         reports_tabs = app.query_one(ReportsPane).query_one(TabbedContent)
         reports_tabs.active = "tab-quotas"
         await pilot.pause(0.3)
-        snap(app, 2.2)  # Reports > Quotas: this month's usage per API
+        snap(app, 2.8)  # Reports > Quotas: this month's usage per API
+
+        reports_tabs.active = "tab-log"
+        await pilot.pause(0.3)
+        snap(app, 2.6)  # Reports > Search log: per-run history, including a kept partial result
 
     return moments
 
