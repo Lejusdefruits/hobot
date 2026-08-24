@@ -1250,6 +1250,22 @@ def wipe_memory() -> None:
         cur.execute("DELETE FROM writes")
 
 
+def clear_thread(thread_id: str) -> None:
+    """Deletes conversation history for ONE thread only -- the terminal
+    UI's "Clear chat" button, which has no business wiping a Discord user's
+    conversation the way wipe_memory() (/reset, everyone at once) does.
+    Also the fix for a real trap: a live-status question (statut_veille --
+    is the daemon running, when's the next check) answered a second time
+    late in a long conversation can get answered from the model's OWN
+    earlier turn in that same history instead of a fresh tool call, quietly
+    repeating a now-stale answer. Clearing the thread is the reliable way to
+    force a live re-check, short of trusting every model to always re-call
+    a tool instead of quoting itself."""
+    with _checkpointer.cursor() as cur:
+        cur.execute("DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,))
+        cur.execute("DELETE FROM writes WHERE thread_id = ?", (thread_id,))
+
+
 def get_history(thread_id: str) -> list[dict]:
     """Stored conversation turns for a thread_id, oldest first, as plain
     {"role": "user"|"assistant", "content": str} dicts -- tool calls/results

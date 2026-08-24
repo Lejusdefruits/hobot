@@ -17,6 +17,8 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Input, Static
 
+from tui.modals import ConfirmModal
+
 CLI_CHAT_THREAD_ID = os.environ.get("CLI_CHAT_THREAD_ID", "cli")
 
 # https URLs only -- job postings, letters, and everything this agent talks
@@ -94,6 +96,7 @@ class ChatPane(Vertical):
         with Horizontal(classes="chat-input-row"):
             yield Input(placeholder="Ask anything -- find postings, check a score, draft a reply...", id="chat-input")
             yield Button("Send", id="send-chat", variant="primary")
+            yield Button("Clear chat", id="clear-chat")
 
     def on_mount(self) -> None:
         from graphs.chat_agent import get_history
@@ -141,10 +144,33 @@ class ChatPane(Vertical):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "send-chat":
             self._send()
+        elif event.button.id == "clear-chat":
+            self._confirm_clear_chat()
         elif event.button.id and event.button.id.startswith("confirm-send-"):
             self._confirm_send(event.button.id.removeprefix("confirm-send-"))
         elif event.button.id and event.button.id.startswith("dismiss-send-"):
             self._dismiss_send(event.button.id.removeprefix("dismiss-send-"))
+
+    def _confirm_clear_chat(self) -> None:
+        def handle(confirmed: bool | None) -> None:
+            if confirmed:
+                self._clear_chat()
+        self.app.push_screen(
+            ConfirmModal(
+                "Clear this conversation?",
+                "Deletes this chat's history for good -- also the reliable way to force a fresh "
+                "answer to a status question (e.g. is the daemon running) instead of the model "
+                "quoting its own earlier answer from this same conversation.",
+                confirm_label="Clear", danger=True,
+            ),
+            handle,
+        )
+
+    def _clear_chat(self) -> None:
+        from graphs.chat_agent import clear_thread
+        clear_thread(CLI_CHAT_THREAD_ID)
+        self.query_one("#chat-log", VerticalScroll).remove_children()
+        self.notify("Chat cleared.")
 
     def _send(self) -> None:
         chat_input = self.query_one("#chat-input", Input)
