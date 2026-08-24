@@ -107,7 +107,7 @@ class ChatPane(Vertical):
         # the moment the app opens. tui/app.py focuses this input instead,
         # only when the Chat tab actually becomes the active one.
 
-    def _append_turn(self, role: str, content: str) -> Vertical:
+    def _append_turn(self, role: str, content: str) -> None:
         log = self.query_one("#chat-log", VerticalScroll)
         is_user = role == "user"
         turn = Vertical(classes=f"chat-turn {'chat-turn-user' if is_user else 'chat-turn-assistant'}")
@@ -115,7 +115,6 @@ class ChatPane(Vertical):
         turn.mount(Static("You" if is_user else "hobot", classes="chat-role-user" if is_user else "chat-role-assistant"))
         turn.mount(Static(_message_text(content), classes="chat-message"))
         self.scroll_to_end()
-        return turn
 
     def on_click(self, event) -> None:
         # Click bubbles up from whichever Static rendered the link (see
@@ -161,18 +160,13 @@ class ChatPane(Vertical):
     def _on_reply(self, reply: str) -> None:
         indicator = self.query_one("#thinking-indicator", Static)
         indicator.remove()
-        turn = self._append_turn("assistant", reply)
-        # A reply taller than the visible log (a long answer, a full letter
-        # draft...) made scroll_to_end() show only its tail end -- the "hobot"
-        # label and the start of the answer sat scrolled just above the
-        # viewport, confirmed directly, which is exactly what looked like
-        # "the reply never scrolled down" from the chat staying on the
-        # previous turn's content. Revealing the new turn from its own top
-        # instead means a short reply that already fits still ends up at the
-        # same true bottom as before; a long one now opens where it starts,
-        # readable immediately, rather than mid-sentence at wherever its
-        # last visible line happens to fall.
-        turn.scroll_visible(animate=False, top=True)
+        # _append_turn() already scrolls to the true bottom -- kept as a
+        # separate, explicit call here too (not just relying on the one
+        # inside _append_turn) so the intent (always land on the latest
+        # message, input box included, the moment hobot replies) survives
+        # even if _append_turn's own internal scrolling ever changes.
+        self._append_turn("assistant", reply)
+        self.scroll_to_end()
         self.query_one("#chat-input", Input).disabled = False
         self.query_one("#chat-input", Input).focus()
         self._refresh_pending()
