@@ -56,9 +56,19 @@ git clone <your-fork-or-this-repo> hobot && cd hobot
 ./setup.sh          # Linux/macOS. On Windows (PowerShell): .\setup.ps1
 ```
 
-Open `.env`, fill in the `REQUIRED` block at the top (an LLM -- Ollama by
-default, nothing to pay for; see [Base install](#base-install) for a cloud
-key instead), then:
+The last step is a guided setup -- checks whether this machine can run the
+default local model comfortably (offering a free Groq cloud key instead if
+not), then asks which optional features (Discord, French job sources, mail
+monitoring, web search, company contacts...) to turn on now versus later,
+opening each one's signup page on request, and finally offers to start the
+daemon automatically at login. Nothing here is final: skip anything, and
+fill in or change `.env` by hand whenever. It only runs in a real terminal --
+the piped one-liner above stays fully non-interactive and skips straight to
+"Base install done."
+
+Open `.env` yourself instead to fill in anything skipped above -- the
+`REQUIRED` block at the top is an LLM, Ollama by default (nothing to pay
+for; see [Base install](#base-install) for a cloud key instead) -- then:
 
 ```bash
 .venv/bin/python daemon.py    # discovery + Discord (if configured)
@@ -178,6 +188,13 @@ with at least 18-20GB VRAM makes for a solid experience, and it's usable but
 slow CPU-only if you have the RAM and patience for that; a lighter
 tool-calling model (see the note below) is the better fit for more modest
 hardware. See [Platforms](#platforms) for what else differs by OS.
+
+The guided setup wizard (last step of `setup.sh`/`setup.ps1`) checks this for
+you -- a RAM-only check (`HOBOT_MIN_RAM_GB_COMFORTABLE`/`_MARGINAL` in
+`.env`, 16/8 GB by default; GPU is detected and shown but doesn't affect the
+verdict) -- and offers a free Groq cloud key on the spot if the machine looks
+too light for qwen3.8. Same check, run by hand any time:
+`.venv/bin/python -m core.hardware`.
 
 ### 1. Ollama
 
@@ -682,6 +699,14 @@ three options below are the daemon only -- `cli.py` stays something you run
 by hand in your own terminal whenever you want it, whether or not the
 background service is running.
 
+The guided setup wizard offers to do this for you (last question, defaults
+to off) -- same systemd/launchd/Task Scheduler setup as the manual steps
+below, just automated (`core/autostart.py`). On Linux it asks a separate
+follow-up about `loginctl enable-linger` (survives a reboot with nobody
+logged in yet); macOS/Windows stay login-scoped only, matching the manual
+steps below. Run it again any time (`.venv/bin/python scripts/install_wizard.py`)
+to reconfigure after moving the install.
+
 ### Linux (systemd, user-level)
 
 ```bash
@@ -775,7 +800,7 @@ mirror something a Reports/Status/Drafts pane shows at a glance there:
 | `/strategy` | Search keyword currently in use for each discovery source |
 | `/log` | Recent history of discovery runs (keywords searched, results found) |
 | `/notifications` | History of notifications sent (postings, mail, digest, cleanup) |
-| `/quotas` | This month's usage for quota-limited APIs (Adzuna, Hunter.io, Snov.io, Pappers, Tavily) |
+| `/quotas` | This month's usage for quota-limited APIs (Adzuna, Hunter.io, Snov.io, Pappers, Tavily) plus cloud LLM call volume (informational only, never blocks a call) |
 | `/drafts` | Pending reply drafts on the sending account (Gmail) |
 | `/gaps` | AI analysis of the gaps that show up most often in poorly-scored postings |
 | `/digest` | Triggers the weekly digest right now (summary of the week) |
@@ -804,6 +829,7 @@ daemon.py            — the daemon process: scheduler (APScheduler) + Discord b
 cli.py                — terminal UI entry point (its own separate process, see "Terminal UI" above)
 install.sh, install.ps1 — one-line install: clone + setup.sh/setup.ps1, see "Quick start" above
 setup.sh, setup.ps1  — base install (venv, dependencies, .env) for Linux/macOS and Windows
+scripts/install_wizard.py — guided setup: hardware check, optional features, autostart (last step of setup.sh/.ps1)
 systemd/, launchd/    — background-service unit files, see "Running it continuously"
 graphs/
   discovery_graph.py  — fetch (JobSpy + French sources + ATS watchlist) -> dedup -> score (LLM) -> letters -> log
@@ -819,8 +845,11 @@ core/
   circuit_breaker.py  — automatic backoff per failing source (anti-ban)
   locations.py         — French city registry -> coordinates/INSEE code (optional)
   france_travail_auth.py — shared OAuth2 for the France Travail Connect APIs (optional)
-  api_usage.py        — monthly quota tracking (Adzuna, Hunter.io, Snov.io)
+  api_usage.py        — monthly quota tracking (Adzuna, Hunter.io, Snov.io, Pappers, Tavily, cloud LLM calls)
   ats_watchlist.py    — the company list tools/sources_ats.py checks (optional)
+  hardware.py         — RAM/CPU detection: install-time model-fit check + runtime load gate for scoring
+  autostart.py        — configures the systemd/launchd/Task Scheduler autostart from "Running it continuously"
+  browser.py           — opens a URL in the default browser (best-effort, used by the wizard and the terminal UI)
 tools/
   sources_jobspy.py   — discovery connector (no key required)
   sources_lba.py, sources_adzuna.py, sources_francetravail.py,
@@ -874,7 +903,16 @@ A few rules held everywhere in the code, not just stated here:
   risk a false positive.
 - **Nothing ever gets silently dropped.** A posting gets saved as soon as
   it's found, even before scoring; if scoring falls behind on a given day, it
-  just waits for the next run instead of being forgotten.
+  just waits for the next run instead of being forgotten. The same principle
+  covers **load-aware scoring** (`core/hardware.py`,
+  `DISCOVERY_DEFER_ON_HIGH_LOAD`/`DISCOVERY_MAX_CPU_LOAD_FRACTION` in `.env`,
+  on by default): a scheduled run skips scoring rather than compete for CPU
+  while the machine is heavily loaded (a game, a build, anything demanding),
+  and unscored postings just stay `status='new'` for the next scheduled run
+  to pick up. Only applies to a local `LLM_PROVIDER=ollama` -- a cloud API
+  call doesn't run on this machine, so there's nothing to defer -- and never
+  applies to an on-demand scoring request (chat, the TUI's "Score now"
+  button), which always runs immediately regardless of load.
 
 ## What's not here (yet)
 
