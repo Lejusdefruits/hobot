@@ -34,17 +34,37 @@ class DraftsPane(Vertical):
         self.refresh_drafts()
 
     def refresh_drafts(self) -> None:
-        from tools import email_tools
+        # The actual IMAP login+fetch runs in a worker thread (see
+        # _fetch_drafts_worker) -- same reasoning as _do_send/_do_delete
+        # below: a blocking network call here would freeze the whole app,
+        # including on the very first mount.
+        self.run_worker(self._fetch_drafts_worker, thread=True, exclusive=True)
 
-        table = self.query_one("#drafts-table", DataTable)
-        table.clear()
-        error_widget = self.query_one("#drafts-error", Static)
+    def _fetch_drafts_worker(self) -> None:
+        from textual.worker import get_current_worker
+
+        from tools import email_tools
         try:
             drafts = email_tools.lister_brouillons()
-            error_widget.update("")
+            error = None
         except Exception as e:
             drafts = []
-            error_widget.update(f"Could not list drafts: {e}")
+            error = f"Could not list drafts: {e}"
+        # exclusive=True only cancels the asyncio Task wrapping this thread's
+        # future -- it can't stop the OS thread once lister_brouillons() is
+        # already running. A superseded fetch (e.g. a quick double-click on
+        # Refresh, or a delete's own refresh_drafts() overlapping an earlier
+        # one still in flight) must not clobber the table with results a
+        # newer call already replaced -- checked here, right before the only
+        # point that matters, instead of trying to interrupt the IMAP call.
+        if get_current_worker().is_cancelled:
+            return
+        self.app.call_from_thread(self._apply_drafts, drafts, error)
+
+    def _apply_drafts(self, drafts: list, error: str | None) -> None:
+        table = self.query_one("#drafts-table", DataTable)
+        table.clear()
+        self.query_one("#drafts-error", Static).update(error or "")
         for d in drafts:
             table.add_row(
                 d["uid"], d["destinataire"] or "", d["sujet"] or "",
@@ -115,6 +135,13 @@ class DraftsPane(Vertical):
 
     def _delete_worker(self, uid: str) -> None:
         from tools import email_tools
-        email_tools.supprimer_brouillon(uid)
-        self.app.call_from_thread(self.notify, "Draft deleted.")
+        # supprimer_brouillon() never raises -- it returns a message string
+        # either way, "Error deleting draft: ..." / "No draft with uid ..."
+        # on failure, so those two have to be checked for explicitly instead
+        # of assuming success.
+        result = email_tools.supprimer_brouillon(uid)
+        if result.startswith("Error") or result.startswith("No draft"):
+            self.app.call_from_thread(self.notify, result, severity="error")
+        else:
+            self.app.call_from_thread(self.notify, "Draft deleted.")
         self.app.call_from_thread(self.refresh_drafts)

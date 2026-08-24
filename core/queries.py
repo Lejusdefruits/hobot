@@ -56,15 +56,24 @@ def list_unscored_offers(limit: int = 25) -> list:
         ).fetchall()
 
 
-def get_offer_detail(offer_id: int) -> tuple:
-    """Returns (row, has_dossier) -- row is None if the posting doesn't exist."""
+def get_offer_row(offer_id: int):
+    """Just the offers row, None if it doesn't exist -- split out of
+    get_offer_detail() below so a caller that doesn't need has_dossier (e.g.
+    tui/modals.py, which runs its own broader applications query right after)
+    isn't stuck paying for that query's result only to discard it."""
     with get_connection() as conn:
-        row = conn.execute(
+        return conn.execute(
             "SELECT title, company, location, description, url, score, score_reason, status, "
             "last_seen_at, first_seen_at, source FROM offers WHERE id = ?", (offer_id,),
         ).fetchone()
-        if not row:
-            return None, False
+
+
+def get_offer_detail(offer_id: int) -> tuple:
+    """Returns (row, has_dossier) -- row is None if the posting doesn't exist."""
+    row = get_offer_row(offer_id)
+    if not row:
+        return None, False
+    with get_connection() as conn:
         has_dossier = conn.execute(
             "SELECT 1 FROM applications WHERE offer_id = ? AND cover_letter_path IS NOT NULL", (offer_id,),
         ).fetchone() is not None

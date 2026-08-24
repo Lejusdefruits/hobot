@@ -89,12 +89,31 @@ class OfferDetailScreen(ModalScreen[str | None]):
     with a short result string the caller (tui/panes/offers.py) can show as a
     toast, or None if nothing changed."""
 
-    BINDINGS = [("escape", "close", "Close")]
+    BINDINGS = [
+        ("escape", "close", "Close"),
+        ("up", "scroll_body('up')", "Scroll up"),
+        ("down", "scroll_body('down')", "Scroll down"),
+        ("pageup", "scroll_body('page_up')", "Page up"),
+        ("pagedown", "scroll_body('page_down')", "Page down"),
+    ]
 
     def __init__(self, offer_id: int):
         super().__init__()
         self.offer_id = offer_id
         self._changed = False
+        # Set here, not just in refresh_detail(), so on_button_pressed never
+        # dereferences a missing attribute if refresh_detail() returns early
+        # (offer_id no longer in the DB -- see the early return below).
+        self._url = None
+        self._files_row = None
+        self._letter_text = None
+
+    def action_scroll_body(self, direction: str) -> None:
+        body = self.query_one("#offer-detail-body", VerticalScroll)
+        {
+            "up": body.scroll_up, "down": body.scroll_down,
+            "page_up": body.scroll_page_up, "page_down": body.scroll_page_down,
+        }[direction](animate=False)
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="offer-detail-body"):
@@ -105,14 +124,14 @@ class OfferDetailScreen(ModalScreen[str | None]):
             # clickable area at 120 columns), which is exactly what made
             # Save/Cancel/Close look broken rather than just unreachable.
             with Horizontal(classes="button-row"):
-                yield Button("Mark applied", id="applied")
-                yield Button("Exclude", id="exclude")
-                yield Button("Tailor CV", id="tailor-cv")
-                yield Button("Edit letter", id="edit-letter")
+                yield Button("Mark applied", id="applied", classes="action-button")
+                yield Button("Exclude", id="exclude", classes="action-button")
+                yield Button("Tailor CV", id="tailor-cv", classes="action-button")
+                yield Button("Edit letter", id="edit-letter", classes="action-button")
             with Horizontal(classes="button-row"):
-                yield Button("Open link", id="open-link")
-                yield Button("Open letter PDF", id="open-letter")
-                yield Button("Open CV PDF", id="open-cv")
+                yield Button("Open link", id="open-link", classes="action-button")
+                yield Button("Open letter PDF", id="open-letter", classes="action-button")
+                yield Button("Open CV PDF", id="open-cv", classes="action-button")
                 yield Button("Close", id="close")
             yield TextArea(id="letter-editor")
             with Horizontal(classes="button-row", id="letter-save-row"):
@@ -130,14 +149,19 @@ class OfferDetailScreen(ModalScreen[str | None]):
         from tools.ats_check import check_ats_readable
         from tools.ghost_job import check_ghost_job
 
-        row, has_dossier = queries.get_offer_detail(self.offer_id)
+        row = queries.get_offer_row(self.offer_id)
         content = self.query_one("#offer-detail-content", Static)
         if not row:
             content.update(f"Posting #{self.offer_id} not found.")
+            self._url = None
+            self._files_row = None
+            self._letter_text = None
+            for btn in self.query(".action-button"):
+                btn.disabled = True
             return
 
         self._url = row["url"]
-        self._files_row = self._offer_files_row() if has_dossier else None
+        self._files_row = self._offer_files_row()
         lines = [
             f"#{self.offer_id} -- {row['title']}",
             f"{row['company']} -- {row['location'] or 'location unknown'}",
@@ -174,17 +198,27 @@ class OfferDetailScreen(ModalScreen[str | None]):
                 lines += ["", f"Warning: tailored CV PDF may not be ATS-readable ({reason})"]
 
         content.update("\n".join(str(x) for x in lines))
+        # applied/exclude/tailor-cv/edit-letter never got disabled on this
+        # (success) path in the first place, only on the not-found one above --
+        # re-enable them here too, so a not-found refresh followed by a
+        # successful one doesn't leave them stuck disabled with no recovery
+        # short of closing and reopening the modal.
+        for bid in ("applied", "exclude", "tailor-cv", "edit-letter"):
+            self.query_one(f"#{bid}", Button).disabled = False
         self.query_one("#open-link", Button).disabled = not self._url
         self.query_one("#open-letter", Button).disabled = not (self._files_row and self._files_row["cover_letter_path"])
         self.query_one("#open-cv", Button).disabled = not (self._files_row and self._files_row["cv_path"])
 
     def _offer_files_row(self):
+        # Not filtered on cover_letter_path IS NOT NULL (unlike
+        # core.queries.get_offer_detail's has_dossier, which specifically
+        # means "has a letter"): tailoring a CV alone, with no letter drafted
+        # yet, still needs its cv_path to show up here for "Open CV PDF".
         from core.db import get_connection
         with get_connection() as conn:
             return conn.execute(
                 "SELECT a.cover_letter_path, a.cv_path FROM applications a "
-                "WHERE a.offer_id = ? AND a.cover_letter_path IS NOT NULL "
-                "ORDER BY a.id DESC LIMIT 1",
+                "WHERE a.offer_id = ? ORDER BY a.id DESC LIMIT 1",
                 (self.offer_id,),
             ).fetchone()
 
