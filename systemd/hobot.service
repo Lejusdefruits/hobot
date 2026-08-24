@@ -1,6 +1,13 @@
 [Unit]
 Description=hobot — job discovery + Discord bot (optional)
 After=network-online.target ollama.service
+# Stops retrying after 5 failures in 10 minutes instead of looping
+# indefinitely. Must live in [Unit], not [Service] -- some systemd versions
+# silently ignore StartLimitIntervalSec/StartLimitBurst under [Service]
+# ("Unknown key name", confirmed live), leaving crash-loop protection
+# quietly disabled.
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 # Replace with the real path where you cloned the repo, then:
@@ -21,12 +28,9 @@ MemoryMax=2G
 CPUQuota=150%
 Nice=10
 
-# Restarts after a crash, but stops retrying after 5 failures in 10 minutes
-# instead of looping indefinitely.
+# Restarts after a crash (rate-limited by [Unit]'s StartLimitIntervalSec/Burst above).
 Restart=on-failure
 RestartSec=30
-StartLimitIntervalSec=600
-StartLimitBurst=5
 
 [Install]
 WantedBy=default.target
