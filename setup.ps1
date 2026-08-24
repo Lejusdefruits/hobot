@@ -68,6 +68,16 @@ function Invoke-Step {
         Write-Progress -Activity $Message -Status "working" -PercentComplete $pct
         Start-Sleep -Milliseconds 150
     }
+    # HasExited can flip true before .NET has actually finished reaping the
+    # process -- a documented Start-Process quirk: ExitCode can read back
+    # empty, and the redirected stdout/stderr files can still be missing
+    # their last writes, right after the polling loop above exits. Confirmed
+    # here (a step that visibly failed showed an empty exit code and no
+    # captured output). WaitForExit() with no timeout blocks until the
+    # process is fully reaped -- returns immediately since HasExited is
+    # already true, but guarantees ExitCode and the log files are reliable
+    # by the time they're read below.
+    $proc.WaitForExit()
     Write-Progress -Activity $Message -Completed
     if ($proc.ExitCode -eq 0) {
         Write-Done $Message
