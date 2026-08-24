@@ -17,7 +17,8 @@ import threading
 from langchain_core.messages import HumanMessage
 from langchain_core.messages.content import create_image_block
 
-from core.llm_provider import get_chat_model
+from core.api_usage import log_call
+from core.llm_provider import LLM_PROVIDER, get_chat_model
 
 MAX_CONCURRENT = int(os.environ.get("LLM_MAX_CONCURRENT", "2"))
 
@@ -60,6 +61,13 @@ def chat(messages: list[dict], temperature: float = 0.1) -> str:
     lc_messages = [_to_langchain_message(m) for m in messages]
     with _semaphore:
         response = get_chat_model(temperature=temperature).invoke(lc_messages)
+    if LLM_PROVIDER != "ollama":
+        # Ollama is local/free -- only a metered cloud call counts against
+        # the LLM quota tracked in core/api_usage.py (visible on /quotas
+        # alongside Adzuna/Hunter/Snov/Pappers/Tavily). Logged only after
+        # invoke() actually returns, matching log_call's own contract: never
+        # count a call that raised before anything was sent.
+        log_call("llm")
     content = response.content
     if isinstance(content, list):
         # openai/anthropic can return content-block lists instead of a plain

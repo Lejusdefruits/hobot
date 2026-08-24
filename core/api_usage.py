@@ -1,6 +1,6 @@
 """Monthly usage tracking for APIs with a limited free quota (Adzuna 2500/month,
 Hunter.io and Snov.io 50/month each, Pappers 100/month, Tavily 1000 credits/month
--- 1 credit per basic search).
+-- 1 credit per basic search) plus a cloud LLM provider's own call volume.
 
 Without this counter, scheduled discovery or a burst of contact lookups can
 burn through a free quota with zero warning before the API starts refusing
@@ -12,11 +12,19 @@ used up.
 Every limit below is a documented free-tier default (Pappers' isn't published
 as precisely as the others -- confirm against your actual plan on
 pappers.fr/api) and can be overridden per source without touching code, e.g.
-PAPPERS_MONTHLY_QUOTA=300 in .env if you're on a paid plan."""
+PAPPERS_MONTHLY_QUOTA=300 in .env if you're on a paid plan.
+
+"llm" is different from the rest: OpenAI/Anthropic have no fixed monthly call
+cap (pay-per-token, not pay-per-call), and Groq's free-tier limit is
+request-rate-shaped, not "N calls/month" -- there's no real number to enforce
+here the way there is for Adzuna. LLM_MONTHLY_QUOTA is visibility-only:
+shown on the same /quotas surfaces as everything else, but has_quota("llm")
+is deliberately never called anywhere, so a call is never blocked over it."""
 import os
 from datetime import datetime
 
 from core.db import get_connection
+from core.llm_provider import LLM_PROVIDER
 
 MONTHLY_QUOTAS = {
     "adzuna": int(os.environ.get("ADZUNA_MONTHLY_QUOTA", "2500")),
@@ -24,6 +32,7 @@ MONTHLY_QUOTAS = {
     "snov": int(os.environ.get("SNOV_MONTHLY_QUOTA", "50")),
     "pappers": int(os.environ.get("PAPPERS_MONTHLY_QUOTA", "100")),
     "tavily": int(os.environ.get("TAVILY_MONTHLY_QUOTA", "1000")),
+    "llm": int(os.environ.get("LLM_MONTHLY_QUOTA", "10000")),
 }
 
 # Shared with every interface that displays quota usage (discord_bot.py's
@@ -32,7 +41,7 @@ MONTHLY_QUOTAS = {
 # that can silently drift out of sync with each other.
 QUOTA_LABELS = {
     "adzuna": "Adzuna", "hunter": "Hunter.io", "snov": "Snov.io",
-    "pappers": "Pappers", "tavily": "Tavily",
+    "pappers": "Pappers", "tavily": "Tavily", "llm": "LLM (cloud)",
 }
 
 # What each source actually needs configured to be considered "active" --
@@ -40,12 +49,15 @@ QUOTA_LABELS = {
 # in requests/langchain-sized modules just to answer a yes/no) so
 # quota_summary() only ever shows a source the user has actually set up,
 # never a permanent "0/50 used" row for an API they never subscribed to.
+# "llm" is "active" whenever a cloud provider is actually configured --
+# Ollama is local/free, tracking it here would just be noise.
 _CONFIGURED_CHECK = {
     "adzuna": lambda: bool(os.environ.get("ADZUNA_APP_ID") and os.environ.get("ADZUNA_APP_KEY")),
     "hunter": lambda: bool(os.environ.get("HUNTER_API_KEY")),
     "snov": lambda: bool(os.environ.get("SNOV_USER_ID") and os.environ.get("SNOV_API_SECRET")),
     "pappers": lambda: bool(os.environ.get("PAPPERS_API_TOKEN")),
     "tavily": lambda: bool(os.environ.get("TAVILY_API_KEY")),
+    "llm": lambda: LLM_PROVIDER != "ollama",
 }
 
 
