@@ -75,9 +75,17 @@ class HobotApp(App):
         # Focusing the chat input as soon as its tab becomes current, not
         # from ChatPane.on_mount() -- every pane mounts eagerly at startup
         # (not just the visible one), and focusing a widget in a hidden pane
-        # would silently switch the active tab to reveal it.
+        # would silently switch the active tab to reveal it. Same reasoning
+        # is why the log is re-scrolled to the end here too: on_mount()'s own
+        # history replay runs while this pane is still hidden (a hidden
+        # TabPane lays out at 0x0, confirmed directly), so the scroll_end()
+        # calls from replaying past turns land on a container with no real
+        # size yet and settle at the top -- nothing re-triggers a scroll
+        # once the pane actually gets its real size, until now.
         if event.pane is not None and event.pane.id == "tab-chat":
-            self.query_one(ChatPane).focus_input()
+            chat_pane = self.query_one(ChatPane)
+            chat_pane.focus_input()
+            chat_pane.scroll_to_end()
 
 
 def run() -> None:

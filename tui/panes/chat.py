@@ -77,6 +77,9 @@ class ChatPane(Vertical):
     def focus_input(self) -> None:
         self.query_one("#chat-input", Input).focus()
 
+    def scroll_to_end(self) -> None:
+        self.query_one("#chat-log", VerticalScroll).scroll_end(animate=False)
+
     def action_scroll_log(self, direction: str) -> None:
         log = self.query_one("#chat-log", VerticalScroll)
         {
@@ -111,7 +114,7 @@ class ChatPane(Vertical):
         log.mount(turn)
         turn.mount(Static("You" if is_user else "hobot", classes="chat-role-user" if is_user else "chat-role-assistant"))
         turn.mount(Static(_message_text(content), classes="chat-message"))
-        log.scroll_end(animate=False)
+        self.scroll_to_end()
 
     def on_click(self, event) -> None:
         # Click bubbles up from whichever Static rendered the link (see
@@ -146,7 +149,7 @@ class ChatPane(Vertical):
         log = self.query_one("#chat-log", VerticalScroll)
         thinking = Static("hobot is thinking...", classes="hint", id="thinking-indicator")
         log.mount(thinking)
-        log.scroll_end(animate=False)
+        self.scroll_to_end()
         self.run_worker(lambda: self._ask_worker(message), thread=True, exclusive=True)
 
     def _ask_worker(self, message: str) -> None:
