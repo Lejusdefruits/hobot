@@ -293,13 +293,21 @@ def ask_feature(records: dict[str, dict], feature: dict) -> dict[str, str]:
 CLOUD_LLM_OPTIONS = [
     {"label": "Groq", "note": "free, only needs a Google account",
      "url": "https://console.groq.com", "provider": "openai",
-     "base_url": "https://api.groq.com/openai/v1", "key_var": "OPENAI_API_KEY"},
+     "base_url": "https://api.groq.com/openai/v1", "key_var": "OPENAI_API_KEY",
+     # Groq doesn't serve OpenAI's own models -- OPENAI_MODEL's default
+     # (gpt-5-mini) doesn't exist on Groq's endpoint and fails with a
+     # model-not-found error at chat time, so this needs overriding too,
+     # not just the base URL/key. Verified working end to end (chat, JSON
+     # output, tool calling) against Groq's live API; Groq's lineup moves
+     # faster than OpenAI's or Anthropic's, so if this ever 404s, check
+     # console.groq.com/docs/models and set OPENAI_MODEL by hand.
+     "model_var": "OPENAI_MODEL", "model_value": "openai/gpt-oss-120b"},
     {"label": "OpenAI", "note": "paid, pay-as-you-go billing required",
      "url": "https://platform.openai.com/api-keys", "provider": "openai",
-     "base_url": None, "key_var": "OPENAI_API_KEY"},
+     "base_url": None, "key_var": "OPENAI_API_KEY", "model_var": None, "model_value": None},
     {"label": "Anthropic", "note": "paid, pay-as-you-go billing required",
      "url": "https://console.anthropic.com/settings/keys", "provider": "anthropic",
-     "base_url": None, "key_var": "ANTHROPIC_API_KEY"},
+     "base_url": None, "key_var": "ANTHROPIC_API_KEY", "model_var": None, "model_value": None},
 ]
 
 
@@ -334,6 +342,8 @@ def ask_hardware() -> dict[str, str]:
     answers = {"LLM_PROVIDER": option["provider"], option["key_var"]: api_key}
     if option["base_url"]:
         answers["OPENAI_BASE_URL"] = option["base_url"]
+    if option["model_var"]:
+        answers[option["model_var"]] = option["model_value"]
     print(f"  {GREEN}set to use {option['label']}.{RESET}")
     return answers
 
@@ -435,7 +445,7 @@ def main() -> None:
 
     _banner("Guided setup done")
     print(f"  LLM: {_describe_llm_choice(answers)}")
-    configured = sorted(k for k in answers if k not in ("LLM_PROVIDER", "OPENAI_BASE_URL"))
+    configured = sorted(k for k in answers if k not in ("LLM_PROVIDER", "OPENAI_BASE_URL", "OPENAI_MODEL"))
     if configured:
         print(f"  Saved to .env: {', '.join(configured)}")
     else:
