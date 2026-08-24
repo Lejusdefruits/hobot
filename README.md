@@ -837,6 +837,7 @@ cli.py                — terminal UI entry point (its own separate process, see
 install.sh, install.ps1 — one-line install: clone + setup.sh/setup.ps1, see "Quick start" above
 setup.sh, setup.ps1  — base install (venv, dependencies, .env) for Linux/macOS and Windows
 scripts/install_wizard.py — guided setup: hardware check, optional features, autostart (last step of setup.sh/.ps1)
+scripts/record_demo.py — regenerates assets/demo.gif from a live TUI run against fabricated data (dev-only, not part of install)
 systemd/, launchd/    — background-service unit files, see "Running it continuously"
 graphs/
   discovery_graph.py  — fetch (JobSpy + French sources + ATS watchlist) -> dedup -> score (LLM) -> letters -> log
@@ -872,6 +873,9 @@ tools/
   ats_check.py        — verifies a generated PDF's text is actually extractable
   documents.py        — renders cover letters to PDF
   cv_tailor.py        — edits your own uploaded CV in place, per offer (optional)
+  common.py           — shared helpers for the source connectors + cover letter status changes
+  discord_style.py    — shared embed styling between slash commands and proactive notifications
+  notify_tools.py     — desktop + Discord notifications, both logged to the notifications table
   discord_bot.py       — slash commands + bridge to the agent (optional interface)
 tui/                  — the terminal UI (see "Terminal UI" above)
   app.py              — Textual App: tabs, theme, cross-pane wiring
