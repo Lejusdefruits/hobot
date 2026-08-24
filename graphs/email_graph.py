@@ -46,6 +46,7 @@ def _log(msg: str) -> None:
 class EmailState(TypedDict):
     raw_emails: list[dict]
     classified: list[dict]
+    errors: list[str]
 
 
 def fetch_new_node(state: EmailState) -> dict:
@@ -53,11 +54,16 @@ def fetch_new_node(state: EmailState) -> dict:
         known = {(r["account"], r["uid"]) for r in conn.execute("SELECT account, uid FROM emails")}
 
     raw = []
+    errors = []
     for account in email_tools.CREDENTIALS:
         try:
             msgs = email_tools.lire_emails_bruts(account, limite=FETCH_LIMIT)
         except Exception as e:
             _log(f"[fetch] {account} -> failed: {e}")
+            # Kept for log_run_node to persist (run_log.errors was NULL here
+            # regardless of what happened, a bad/revoked app password on one
+            # account went silently unnoticed) -- not just printed to stdout.
+            errors.append(f"{account}: {e}")
             continue
 
         n_new = 0
@@ -80,7 +86,7 @@ def fetch_new_node(state: EmailState) -> dict:
             })
         _log(f"[fetch] {account} -> {len(msgs)} read, {n_new} new")
 
-    return {"raw_emails": raw}
+    return {"raw_emails": raw, "errors": errors}
 
 
 CLASSIFY_PROMPT = """You're classifying an email received in a mailbox used for a job search.
@@ -208,10 +214,11 @@ def log_run_node(state: EmailState) -> dict:
                     email["received_at"],
                 ),
             )
+        errors = state.get("errors") or []
         conn.execute(
             """INSERT INTO run_log (run_type, source, finished_at, n_found, n_new, errors)
-               VALUES ('email_watch', 'gmail', datetime('now'), ?, ?, NULL)""",
-            (len(state["classified"]), len(state["classified"])),
+               VALUES ('email_watch', 'gmail', datetime('now'), ?, ?, ?)""",
+            (len(state["classified"]), len(state["classified"]), "; ".join(errors) or None),
         )
     _maybe_notify(state["classified"])
     return {}
@@ -264,7 +271,7 @@ def build_graph():
 if __name__ == "__main__":
     init_db()
     app = build_graph()
-    result = app.invoke({"raw_emails": [], "classified": []})
+    result = app.invoke({"raw_emails": [], "classified": [], "errors": []})
     print(f"\n{len(result['classified'])} new emails classified.")
     for e in result["classified"]:
         veut_reponse = e["needs_reply"] and e["account"] == email_tools.SEND_ACCOUNT

@@ -170,6 +170,8 @@ async def status(interaction: discord.Interaction):
     if last_email:
         mail_line = (f"Last: {last_email['finished_at']} ({last_email['n_new']} mail(s))\n"
                       f"Next: {next_email}")
+        if last_email["errors"]:
+            mail_line += f"\n:warning: {last_email['errors']}"
     else:
         mail_line = f"Never run\nNext: {next_email}"
     embed.add_field(name="Mail watch", value=mail_line, inline=False)

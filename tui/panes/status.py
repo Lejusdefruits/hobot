@@ -153,6 +153,8 @@ class StatusPane(VerticalScroll):
                 f"Next run: ~{_next_email_check(last_email['finished_at'])} "
                 f"(+/-{EMAIL_JITTER_MIN}min jitter)"
             )
+            if last_email["errors"]:
+                email_text += f"\n[$warning]{last_email['errors']}[/]"
         else:
             email_text = (
                 f"Last run: never\nSchedule: every {EMAIL_INTERVAL_MIN}min (+/-{EMAIL_JITTER_MIN}min jitter)\n"

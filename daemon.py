@@ -124,7 +124,7 @@ def _run_email_watch() -> None:
     log.info("=== run email_watch ===")
     try:
         app = email_graph.build_graph()
-        app.invoke({"raw_emails": [], "classified": []})
+        app.invoke({"raw_emails": [], "classified": [], "errors": []})
     except Exception:
         log.error("email_watch failed:\n%s", traceback.format_exc())
         notify_all(
