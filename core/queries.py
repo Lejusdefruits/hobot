@@ -7,7 +7,56 @@ The SQL here was moved verbatim out of tools/discord_bot.py's command bodies
 another interface could call), not rewritten -- discord_bot.py now calls
 these and keeps only its embed-formatting code.
 """
+import os
+from datetime import datetime, timedelta, timezone
+
 from core.db import get_connection, parse_utc
+
+DISCOVERY_HOURS_WEEKDAY = os.environ.get("DISCOVERY_HOURS_WEEKDAY", "9,11,13,15,17")
+DISCOVERY_HOURS_WEEKEND = os.environ.get("DISCOVERY_HOURS_WEEKEND", "10,16")
+EMAIL_INTERVAL_MIN = os.environ.get("EMAIL_POLL_INTERVAL_MIN", "20")
+
+
+def next_discovery_run() -> str | None:
+    """Discovery's schedule is an absolute cron window
+    (DISCOVERY_HOURS_WEEKDAY/WEEKEND) -- apscheduler's own CronTrigger can
+    compute the next matching time from that definition alone, no live
+    scheduler needed (daemon.py builds the exact same trigger). Deliberately
+    NOT core.daemon_state.scheduler.get_job(...).next_run_time: that object
+    only exists inside daemon.py's own process (see that module's
+    docstring), so reading it from the terminal UI or from graphs/
+    chat_agent.py's statut_veille tool (used by both Discord, which does run
+    inside the daemon process, and the terminal UI's Chat pane, which
+    doesn't) silently always returned "not running" from the one place it
+    was actually wrong -- confirmed live: the daemon was up the whole time,
+    only the terminal UI's chat was ever misreporting it."""
+    from apscheduler.triggers.combining import OrTrigger
+    from apscheduler.triggers.cron import CronTrigger
+
+    trigger = OrTrigger([
+        CronTrigger(day_of_week="mon-fri", hour=DISCOVERY_HOURS_WEEKDAY),
+        CronTrigger(day_of_week="sat,sun", hour=DISCOVERY_HOURS_WEEKEND),
+    ])
+    next_time = trigger.get_next_fire_time(None, datetime.now().astimezone())
+    return next_time.strftime("%a %d %b, %H:%M") if next_time else None
+
+
+def next_email_check(last_finished_at: str | None) -> str:
+    """Email's schedule is a plain interval from the last actual run instead
+    (EMAIL_POLL_INTERVAL_MIN after run_log's last email_watch row) -- that DB
+    row is the authority here, not a live scheduler's own next_run_time,
+    same reasoning as next_discovery_run() above."""
+    if not last_finished_at:
+        return "shortly after the daemon starts"
+    try:
+        # SQLite's datetime('now') is UTC and naive -- localize explicitly
+        # before adding the interval, or the displayed time is off by the
+        # local UTC offset.
+        last_utc = parse_utc(last_finished_at)
+    except ValueError:
+        return "unknown"
+    next_local = (last_utc + timedelta(minutes=int(EMAIL_INTERVAL_MIN))).astimezone()
+    return next_local.strftime("%H:%M")
 
 
 def get_status_summary() -> dict:

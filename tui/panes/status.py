@@ -5,59 +5,28 @@ a single row of the Notifications report), and the reset danger zone.
 
 No LIVE scheduler introspection here (see core/daemon_state.py's module
 docstring on why `paused` is DB-backed but `scheduler` isn't -- that object
-only exists inside daemon.py's own process). "Next run" is still computed,
-just independently: discovery's schedule is an absolute cron window
-(DISCOVERY_HOURS_WEEKDAY/WEEKEND), and apscheduler's own CronTrigger can
-compute the next matching time from that definition alone, no live
-scheduler needed -- daemon.py builds the exact same trigger. Email's
-schedule is a plain interval from the last actual run instead
-(EMAIL_POLL_INTERVAL_MIN after run_log's last email_watch row), which is
-the one already visible from here (a live scheduler wouldn't add anything
-an interval trigger's own next_run_time doesn't already say -- one is a
-config file, not our authority; this DB row *is* the authority)."""
+only exists inside daemon.py's own process). "Next run" is computed
+independently instead, by core.queries.next_discovery_run/next_email_check
+-- shared with graphs/chat_agent.py's statut_veille tool, which needs the
+exact same independence: it's reachable from Discord (running inside the
+daemon process, where daemon_state.scheduler would actually work) and from
+the terminal UI's Chat pane (a separate process, where it never would)."""
 import os
-from datetime import datetime, timedelta, timezone
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Static
 
+from core.queries import DISCOVERY_HOURS_WEEKDAY, DISCOVERY_HOURS_WEEKEND, EMAIL_INTERVAL_MIN
+from core.queries import next_discovery_run as _next_discovery_run
+from core.queries import next_email_check as _next_email_check
 from tui.modals import ConfirmModal
 
-DISCOVERY_HOURS_WEEKDAY = os.environ.get("DISCOVERY_HOURS_WEEKDAY", "9,11,13,15,17")
-DISCOVERY_HOURS_WEEKEND = os.environ.get("DISCOVERY_HOURS_WEEKEND", "10,16")
 DISCOVERY_JITTER_MIN = os.environ.get("JOBSPY_JITTER_MIN", "90")
-EMAIL_INTERVAL_MIN = os.environ.get("EMAIL_POLL_INTERVAL_MIN", "20")
 EMAIL_JITTER_MIN = os.environ.get("EMAIL_POLL_JITTER_MIN", "5")
 WEEKLY_DIGEST_DAY = os.environ.get("WEEKLY_DIGEST_DAY", "mon")
 WEEKLY_DIGEST_HOUR = os.environ.get("WEEKLY_DIGEST_HOUR", "9")
 EMAIL_CONFIGURED = bool(os.environ.get("GMAIL_ACCOUNT_1"))
-
-
-def _next_discovery_run() -> str | None:
-    from apscheduler.triggers.combining import OrTrigger
-    from apscheduler.triggers.cron import CronTrigger
-
-    trigger = OrTrigger([
-        CronTrigger(day_of_week="mon-fri", hour=DISCOVERY_HOURS_WEEKDAY),
-        CronTrigger(day_of_week="sat,sun", hour=DISCOVERY_HOURS_WEEKEND),
-    ])
-    next_time = trigger.get_next_fire_time(None, datetime.now().astimezone())
-    return next_time.strftime("%a %d %b, %H:%M") if next_time else None
-
-
-def _next_email_check(last_finished_at: str | None) -> str:
-    if not last_finished_at:
-        return "shortly after the daemon starts"
-    try:
-        # SQLite's datetime('now') is UTC and naive -- localize explicitly
-        # before adding the interval, or the displayed time is off by the
-        # local UTC offset.
-        last_utc = datetime.fromisoformat(last_finished_at).replace(tzinfo=timezone.utc)
-    except ValueError:
-        return "unknown"
-    next_local = (last_utc + timedelta(minutes=int(EMAIL_INTERVAL_MIN))).astimezone()
-    return next_local.strftime("%H:%M")
 
 
 class StatusPane(VerticalScroll):

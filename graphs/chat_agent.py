@@ -263,9 +263,12 @@ def mes_candidatures() -> str:
 @tool
 def statut_veille() -> str:
     """Gives the PRECISE date/time of the last check AND the next scheduled
-    one, separately for offers and for emails. Use this for any question like
-    'when was the last check', 'when's the next one due', 'when did you last
-    check the emails', etc."""
+    one, separately for offers and for emails, plus whether the daemon is
+    actually running right now. Use this for any question like 'when was the
+    last check', 'when's the next one due', 'when did you last check the
+    emails', 'is the daemon running', etc."""
+    from core import queries
+
     with get_connection() as conn:
         last_discovery = conn.execute(
             "SELECT finished_at FROM run_log WHERE run_type='discovery' ORDER BY id DESC LIMIT 1"
@@ -274,21 +277,28 @@ def statut_veille() -> str:
             "SELECT finished_at FROM run_log WHERE run_type='email_watch' ORDER BY id DESC LIMIT 1"
         ).fetchone()
 
-    from core import daemon_state
-    next_discovery = next_email = "unknown (daemon not running)"
-    if daemon_state.scheduler is not None:
-        job_d = daemon_state.scheduler.get_job("discovery")
-        job_e = daemon_state.scheduler.get_job("email_watch")
-        if job_d and job_d.next_run_time:
-            next_discovery = job_d.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
-        if job_e and job_e.next_run_time:
-            next_email = job_e.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+    # Deliberately NOT core.daemon_state.scheduler (an in-memory attribute
+    # that only exists inside daemon.py's own process, see that module's
+    # docstring): this tool is reachable from the terminal UI's Chat pane, a
+    # SEPARATE process, where that object is always None regardless of
+    # whether the real daemon is running -- confirmed live, it reported "not
+    # running" for a daemon that had been up for hours. Liveness comes from
+    # the DB heartbeat instead (core.queries.get_daemon_liveness, the same
+    # one the terminal UI's own Status pane uses), and next-due times come
+    # from the schedule/last-run data (core.queries.next_discovery_run/
+    # next_email_check), not a live scheduler object -- both work
+    # identically from any process.
+    liveness = queries.get_daemon_liveness()
+    daemon_line = "running" if liveness["running"] else "NOT running -- nothing will fire until it's started"
+    next_discovery = queries.next_discovery_run() or "unknown"
+    next_email = queries.next_email_check(last_email["finished_at"] if last_email else None)
 
     return (
+        f"Daemon: {daemon_line}\n"
         f"OFFER watch -- last check: {last_discovery['finished_at'] if last_discovery else 'never'} "
         f"| next due: {next_discovery}\n"
         f"EMAIL watch -- last check: {last_email['finished_at'] if last_email else 'never'} "
-        f"| next due: {next_email}"
+        f"| next due: ~{next_email}"
     )
 
 
