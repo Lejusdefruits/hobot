@@ -921,15 +921,30 @@ async def profile_cmd(interaction: discord.Interaction, file: discord.Attachment
 
     try:
         fmt = await asyncio.get_event_loop().run_in_executor(None, profile_mod.detect_format, tmp_path)
-        parsed = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: profile_mod.parse_cv(tmp_path, fmt=fmt)
-        )
-        await asyncio.get_event_loop().run_in_executor(None, profile_mod.save_profile, parsed)
-        await asyncio.get_event_loop().run_in_executor(
-            None, lambda: profile_mod.save_profile_source(tmp_path, fmt)
-        )
+        try:
+            parsed = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: profile_mod.parse_cv(tmp_path, fmt=fmt)
+            )
+            await asyncio.get_event_loop().run_in_executor(None, profile_mod.save_profile, parsed)
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: profile_mod.save_profile_source(tmp_path, fmt)
+            )
+        except Exception as e:
+            description = f"Could not read that CV: {e}"
+            if fmt == "pdf_image":
+                # See ATS_WARNING's own docstring -- a vision-capability
+                # failure here (most likely) is almost beside the point.
+                description += f"\n\nAlso: {profile_mod.ATS_WARNING}"
+            await interaction.followup.send(embed=base_embed("Couldn't read that CV", color=COLOR_ERROR,
+                                                               description=description))
+            return
     finally:
         tmp_path.unlink(missing_ok=True)
+
+    if fmt == "pdf_image":
+        await interaction.followup.send(embed=base_embed(
+            "Heads up", color=COLOR_PAUSED, description=profile_mod.ATS_WARNING,
+        ))
 
     embed = base_embed("Profile saved", color=COLOR_ACTIVE)
     embed.add_field(name="Name", value=parsed.get("full_name") or "(not detected)", inline=True)

@@ -170,11 +170,29 @@ class ProfilePane(VerticalScroll):
 
         try:
             fmt = profile_mod.detect_format(path)
+        except Exception as e:
+            self.app.call_from_thread(self.query_one("#profile-error", Static).update, f"Could not read that CV: {e}")
+            return
+
+        try:
             parsed = profile_mod.parse_cv(path, fmt=fmt)
             profile_mod.save_profile(parsed)
             profile_mod.save_profile_source(path, fmt)
         except Exception as e:
-            self.app.call_from_thread(self.query_one("#profile-error", Static).update, f"Could not read that CV: {e}")
+            message = f"Could not read that CV: {e}"
+            if fmt == "pdf_image":
+                # A vision-model-capability failure (a 400 from a text-only
+                # provider, most likely) is almost beside the point here --
+                # see ATS_WARNING's own docstring for why.
+                message += f" Also: {profile_mod.ATS_WARNING}"
+            self.app.call_from_thread(self.query_one("#profile-error", Static).update, message)
             return
-        self.app.call_from_thread(self.notify, "Profile updated from CV.")
+
+        if fmt == "pdf_image":
+            self.app.call_from_thread(
+                self.query_one("#profile-error", Static).update,
+                f"Profile updated from CV, but: {profile_mod.ATS_WARNING}",
+            )
+        else:
+            self.app.call_from_thread(self.notify, "Profile updated from CV.")
         self.app.call_from_thread(self.refresh_profile)

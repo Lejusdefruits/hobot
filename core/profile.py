@@ -29,6 +29,21 @@ PROFILE_DIR = Path(__file__).resolve().parent.parent / os.environ.get("HOBOT_PRO
 
 CvFormat = Literal["pdf_text", "pdf_image", "docx"]
 
+# Shown by every caller of parse_cv (tui/panes/profile.py, tools/discord_bot.py,
+# this module's own __main__) whenever detect_format() returns "pdf_image" --
+# regardless of whether the vision-based read below actually succeeds. A
+# flattened/image-only PDF isn't just a hobot problem: most real ATS systems
+# extract candidate data the same way (parsing embedded text), so a CV in this
+# format is likely to be misread or dropped by the actual companies being
+# applied to as well, independent of what hobot manages to extract from it here.
+ATS_WARNING = (
+    "this CV has no text layer (a flattened/image export -- common from some "
+    "\"PDF for print\" downloads, Canva included) -- most real ATS systems "
+    "can't read it either, which will likely hurt real applications no matter "
+    "what hobot does with it here. Re-export it as a real text PDF (or .docx) "
+    "before using it for job applications."
+)
+
 # Below this many detected items across skills/target_roles/target_locations,
 # /profile follows up with clarifying questions instead of silently accepting
 # a thin profile -- see detect_gaps().
@@ -228,6 +243,8 @@ if __name__ == "__main__":
               "\"definir_profil: <your text>\".")
         sys.exit(1)
     fmt = detect_format(CV_PATH)
+    if fmt == "pdf_image":
+        print(f"Note: {ATS_WARNING}\n")
     profile = parse_cv(CV_PATH, fmt=fmt)
     save_profile(profile)
     save_profile_source(CV_PATH, fmt)
