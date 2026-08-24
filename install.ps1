@@ -21,8 +21,10 @@ if (Test-Path $targetDir) {
     exit 1
 }
 
-Write-Host "Cloning into $targetDir..."
+Write-Host "Cloning hobot into .\$targetDir" -ForegroundColor White
 git clone --depth 1 $repoUrl $targetDir
 Set-Location $targetDir
 
+Write-Host ""
+Write-Host "Repo cloned -- handing off to setup.ps1 for the venv, dependencies, and .env."
 & .\setup.ps1
