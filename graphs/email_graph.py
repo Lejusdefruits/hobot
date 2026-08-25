@@ -12,6 +12,13 @@ spaced-out ones. Dedup goes through the `emails` table's UNIQUE(account, uid)
 constraint, not a fragile external cursor: every run re-reads each account's
 last FETCH_LIMIT mails and skips whatever's already in the database.
 
+Each account gets its own circuit breaker (source = "gmail:{account}",
+_log_account_result/is_backed_off) -- a broken account (a revoked app
+password, etc.) backs off (2h, doubled, capped at 24h, same as an offer
+source) instead of failing on every run forever, and a proactive
+notification fires the moment it does, rather than the failure only showing
+up if someone happens to check the daemon logs.
+
 draft_reply only fires for mail received on GMAIL_SEND_ACCOUNT: the other
 configured accounts are read-only (see tools/email_tools.py), so for mail
 received elsewhere this graph classifies and logs but drafts nothing -- that
@@ -26,9 +33,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from langgraph.graph import END, START, StateGraph
 
+from core.circuit_breaker import compute_backoff_until, is_backed_off
 from core.db import get_connection, get_user_profile, init_db
 from core.llm import chat_json
 from tools import email_tools
+from tools.discord_style import COLOR_ERROR, base_embed
 from tools.notify_tools import notify_all
 
 FETCH_LIMIT = int(os.environ.get("EMAIL_FETCH_LIMIT", "10"))
@@ -49,6 +58,36 @@ class EmailState(TypedDict):
     errors: list[str]
 
 
+def _log_account_result(account: str, n_found: int, n_new: int, error: str | None) -> None:
+    """Logs PER ACCOUNT into run_log -- without this, a broken account (a
+    revoked app password, etc.) just failed on stdout forever, never
+    reaching the circuit breaker or the user, unlike every offer source,
+    which has had this treatment from the start. Logging a success too (not
+    just failures) is what the circuit breaker itself needs:
+    compute_backoff_until counts consecutive failures by walking this
+    account's own recent rows, and a more recent healthy row is what stops
+    that count and lets the backoff lapse."""
+    source = f"gmail:{account}"
+    backoff_until = compute_backoff_until(source, has_error=bool(error))
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO run_log (run_type, source, finished_at, n_found, n_new, errors, backoff_until)
+               VALUES ('email_watch', ?, datetime('now'), ?, ?, ?, ?)""",
+            (source, n_found, n_new, error, backoff_until),
+        )
+    if backoff_until:
+        _log(f"[circuit-breaker] {source} failing -> backed off until {backoff_until}")
+        notify_all(
+            "hobot -- Gmail account failing",
+            f"{source}: {error}\nBacked off until {backoff_until} (retried automatically after that).",
+            embed=base_embed(
+                "Gmail account failing", color=COLOR_ERROR,
+                description=f"**{source}**\n{error}\n\nBacked off until {backoff_until}.",
+            ),
+            kind="error",
+        )
+
+
 def fetch_new_node(state: EmailState) -> dict:
     with get_connection() as conn:
         known = {(r["account"], r["uid"]) for r in conn.execute("SELECT account, uid FROM emails")}
@@ -56,6 +95,10 @@ def fetch_new_node(state: EmailState) -> dict:
     raw = []
     errors = []
     for account in email_tools.CREDENTIALS:
+        backed_off, until = is_backed_off(f"gmail:{account}")
+        if backed_off:
+            _log(f"[fetch] {account} -> backed off until {until}, skipped (not attempted)")
+            continue
         try:
             msgs = email_tools.lire_emails_bruts(account, limite=FETCH_LIMIT)
         except Exception as e:
@@ -64,6 +107,7 @@ def fetch_new_node(state: EmailState) -> dict:
             # regardless of what happened, a bad/revoked app password on one
             # account went silently unnoticed) -- not just printed to stdout.
             errors.append(f"{account}: {e}")
+            _log_account_result(account, n_found=0, n_new=0, error=str(e))
             continue
 
         n_new = 0
@@ -85,6 +129,7 @@ def fetch_new_node(state: EmailState) -> dict:
                 "received_at": str(msg.date),
             })
         _log(f"[fetch] {account} -> {len(msgs)} read, {n_new} new")
+        _log_account_result(account, n_found=len(msgs), n_new=n_new, error=None)
 
     return {"raw_emails": raw, "errors": errors}
 

@@ -105,3 +105,35 @@ def quota_summary() -> list[dict]:
         for source, limit in MONTHLY_QUOTAS.items()
         if is_configured(source)
     ]
+
+
+def check_quota_alerts(threshold_pct: float = 10.0) -> list[dict]:
+    """Sources whose remaining monthly quota has dropped under threshold_pct,
+    not already flagged this month -- without this, the only way to find out
+    was to type /quotas, potentially after already being silently refused by
+    Hunter/Snov (see this module's own docstring). Dedupes by reading the
+    `notifications` table (tools/notify_tools.py) directly instead of a
+    separate counter: one alert per source per month, not one per scheduled
+    run -- each alert carries a deterministic `title` (the source of truth
+    for both the dedup check AND the text sent, not two formats that could
+    drift apart). "llm" is excluded even if configured: LLM_MONTHLY_QUOTA is
+    documented as visibility-only, not a real cap (see MONTHLY_QUOTAS above),
+    so a "low" reading there would be a false alarm."""
+    from core.db import get_connection
+    month_start = datetime.now().strftime("%Y-%m-01")
+    with get_connection() as conn:
+        already = {
+            row["title"] for row in conn.execute(
+                "SELECT title FROM notifications WHERE kind = 'quota' AND created_at >= ?", (month_start,)
+            )
+        }
+    alerts = []
+    for q in quota_summary():
+        if q["source"] == "llm":
+            continue
+        pct_remaining = (q["remaining"] / q["limit"] * 100) if q["limit"] else 100
+        label = QUOTA_LABELS.get(q["source"], q["source"])
+        title = f"hobot -- {label} quota low"
+        if pct_remaining <= threshold_pct and title not in already:
+            alerts.append({**q, "pct_remaining": round(pct_remaining, 1), "title": title, "label": label})
+    return alerts

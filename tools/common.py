@@ -127,6 +127,37 @@ def unarchive_cover_letter(conn: Connection, offer_id: int) -> None:
     _unarchive_column(conn, offer_id, "cv_path")
 
 
+def company_health_check(conn: Connection, offer_id: int, company: str | None) -> dict | None:
+    """Pappers health signals (verifier_sante) for an offer's company,
+    cached directly on the `offers` row -- same spirit as company_contacts
+    for contacts: Pappers is a paid/quota-limited API, never call it twice
+    for the same offer. Returns {"effectif", "red_flag"} (red_flag = None if
+    nothing concerning), or None if the company couldn't be identified (not
+    cached in that case, so a retry later is still possible -- e.g. the
+    company name wasn't reliable yet at this point)."""
+    row = conn.execute(
+        "SELECT company_effectif, company_red_flag, company_health_checked_at FROM offers WHERE id = ?",
+        (offer_id,),
+    ).fetchone()
+    if row and row["company_health_checked_at"]:
+        return {"effectif": row["company_effectif"], "red_flag": row["company_red_flag"]}
+    if not company:
+        return None
+
+    from tools.sources_pappers import alerte_texte, verifier_sante
+    sante = verifier_sante(company)
+    if sante is None:
+        return None
+    red_flag = alerte_texte(sante)
+    conn.execute(
+        "UPDATE offers SET company_effectif = ?, company_red_flag = ?, company_health_checked_at = datetime('now') "
+        "WHERE id = ?",
+        (sante.get("effectif"), red_flag, offer_id),
+    )
+    conn.commit()
+    return {"effectif": sante.get("effectif"), "red_flag": red_flag}
+
+
 SPONTANEOUS_LEAD_SOURCES = ("lba_recruiter", "labonneboite", "ats_lead")
 
 # Readable labels for the `source` column -- used by /sources, /log, and
@@ -136,7 +167,8 @@ SOURCE_LABELS = {
     "lba": "La Bonne Alternance",
     "lba_recruiter": "La Bonne Alternance (spontaneous-application lead)",
     "adzuna": "Adzuna",
-    "jobspy": "JobSpy (Indeed)",
+    "jobspy_indeed": "JobSpy (Indeed)",
+    "jobspy_linkedin": "JobSpy (LinkedIn)",
     "francetravail": "France Travail",
     "labonneboite": "La Bonne Boite (spontaneous-application lead)",
     "ats": "ATS watchlist (Greenhouse/Ashby/Lever)",
@@ -148,6 +180,18 @@ SOURCE_LABELS = {
 
 
 def source_label(source: str | None) -> str:
+    # "jobspy" (the run_log/circuit-breaker source every fetch_jobspy_node
+    # run logs under, regardless of site) has no single fixed label -- which
+    # sites it actually scraped is JOBSPY_SITES (.env), read live instead of
+    # hardcoded, so a label like "(Indeed)" never lies about LinkedIn (or any
+    # other site added later) also having run. Individual offers still carry
+    # the fine-grained "jobspy_indeed"/"jobspy_linkedin" in their own
+    # `source` column (see SOURCE_LABELS) -- this only covers the coarse key
+    # run_log/the circuit breaker use.
+    if source == "jobspy":
+        from tools.sources_jobspy import SITES
+        site_names = {"indeed": "Indeed", "linkedin": "LinkedIn", "glassdoor": "Glassdoor", "google": "Google"}
+        return f"JobSpy ({', '.join(site_names.get(s, s.capitalize()) for s in SITES)})"
     return SOURCE_LABELS.get(source or "", source or "?")
 
 

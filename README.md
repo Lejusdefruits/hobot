@@ -960,19 +960,6 @@ A few rules held everywhere in the code, not just stated here:
   applies to an on-demand scoring request (chat, the TUI's "Score now"
   button), which always runs immediately regardless of load.
 
-## What's not here (yet)
-
-This started as a generic fork of a more personal project, and a few pieces
-of that one didn't make it over, either because they assume an already
-well-worn setup or didn't fit a generic version. For reference, if you want
-to take it further:
-
-- Search keywords come straight from the profile, not adjusted automatically
-  run to run based on results.
-
-None of that stops the bot from working correctly for the main loop: finding
-postings, sorting them, writing letters, handling mail.
-
 ## License
 
 MIT, see [LICENSE](LICENSE). `assets/fonts/` bundles static instances of

@@ -221,7 +221,7 @@ def get_daemon_liveness(stale_after_seconds: int = 90) -> dict:
 def get_strategy() -> list:
     with get_connection() as conn:
         return conn.execute(
-            """SELECT r.source, r.query, r.n_found, r.finished_at
+            """SELECT r.source, r.query, r.query_reasoning, r.n_found, r.finished_at
                FROM run_log r
                JOIN (SELECT source, MAX(id) AS max_id FROM run_log
                      WHERE query IS NOT NULL GROUP BY source) m

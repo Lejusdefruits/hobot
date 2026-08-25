@@ -45,7 +45,7 @@ class ReportsPane(Vertical):
         self.query_one("#quotas-table", DataTable).add_columns("Source", "Used", "Limit", "Remaining")
         self.query_one("#log-table", DataTable).add_columns(
             "Source", "Query", "Found", "New", "Errors", "Finished at")
-        self.query_one("#strategy-table", DataTable).add_columns("Source", "Query", "Found", "Finished at")
+        self.query_one("#strategy-table", DataTable).add_columns("Source", "Query", "Found", "Finished at", "Why")
         self.query_one("#notifications-table", DataTable).add_columns(
             "Kind", "Title", "Message", "Postings", "Created at")
         self.query_one("#funnel-table", DataTable).add_columns("Stage", "Count", "% of found", "% of previous")
@@ -103,7 +103,10 @@ class ReportsPane(Vertical):
         table = self.query_one("#strategy-table", DataTable)
         table.clear()
         for r in queries.get_strategy():
-            table.add_row(common.source_label(r["source"]), r["query"] or "-", str(r["n_found"]), r["finished_at"] or "-")
+            table.add_row(
+                common.source_label(r["source"]), r["query"] or "-", str(r["n_found"]),
+                r["finished_at"] or "-", r["query_reasoning"] or "-",
+            )
 
     def _refresh_notifications(self) -> None:
         from core import queries

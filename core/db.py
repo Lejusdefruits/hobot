@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS offers (
     status          TEXT NOT NULL DEFAULT 'new',
     origin          TEXT NOT NULL DEFAULT 'veille',
     company_domain  TEXT,
+    company_effectif TEXT,
+    company_red_flag TEXT,
+    company_health_checked_at TEXT,
     first_seen_at   TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
     link_checked_at TEXT
@@ -98,7 +101,8 @@ CREATE TABLE IF NOT EXISTS run_log (
     n_new           INTEGER,
     errors          TEXT,
     backoff_until   TEXT,
-    query           TEXT
+    query           TEXT,
+    query_reasoning TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_run_log_source ON run_log(source);
 
@@ -277,6 +281,10 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
         _add_column(conn, "offers", "company_domain TEXT")
     if "link_checked_at" not in cols:
         _add_column(conn, "offers", "link_checked_at TEXT")
+    if "company_effectif" not in cols:
+        _add_column(conn, "offers", "company_effectif TEXT")
+        _add_column(conn, "offers", "company_red_flag TEXT")
+        _add_column(conn, "offers", "company_health_checked_at TEXT")
 
     if "user_profile" in tables:
         profile_cols = {row["name"] for row in conn.execute("PRAGMA table_info(user_profile)")}
@@ -302,6 +310,8 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
         run_log_cols = {row["name"] for row in conn.execute("PRAGMA table_info(run_log)")}
         if "query" not in run_log_cols:
             _add_column(conn, "run_log", "query TEXT")
+        if "query_reasoning" not in run_log_cols:
+            _add_column(conn, "run_log", "query_reasoning TEXT")
 
     if "daemon_flags" in tables:
         flags_cols = {row["name"] for row in conn.execute("PRAGMA table_info(daemon_flags)")}

@@ -579,12 +579,14 @@ async def strategy(interaction: discord.Interaction):
 
     embed = base_embed(
         "Current search strategy",
-        description="No per-run adaptation: each keyword comes straight from your target roles "
-                     "and stays fixed until the profile changes.",
+        description="Keywords are chosen fresh by the AI before every scheduled run, "
+                     "informed by each source's own recent result history.",
     )
     for r in rows:
         name = f"{common.source_label(r['source'])} -- \"{r['query']}\""[:256]
         value = f"{r['n_found']} result(s) last run ({r['finished_at']})"
+        if r["query_reasoning"]:
+            value += f"\n{r['query_reasoning']}"
         embed.add_field(name=name, value=value[:1024], inline=False)
     await interaction.response.send_message(embed=embed)
 

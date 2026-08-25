@@ -51,6 +51,7 @@ WEEKLY_DIGEST_DAY = os.environ.get("WEEKLY_DIGEST_DAY", "mon")
 WEEKLY_DIGEST_HOUR = int(os.environ.get("WEEKLY_DIGEST_HOUR", "9"))
 STALE_DRAFT_DAYS = int(os.environ.get("STALE_DRAFT_DAYS", "5"))
 FUNDING_CHECK_INTERVAL_DAYS = int(os.environ.get("FUNDING_CHECK_INTERVAL_DAYS", "2"))
+QUOTA_ALERT_THRESHOLD_PCT = float(os.environ.get("QUOTA_ALERT_THRESHOLD_PCT", "10"))
 
 scheduler = BackgroundScheduler()
 
@@ -85,7 +86,11 @@ def _run_discovery() -> None:
     log.info("=== run discovery (JobSpy) ===")
     try:
         app = discovery_graph.build_graph()
-        app.invoke({"raw_offers": [], "stats": [], "new_offers": [], "n_new_by_source": {}, "scored_offers": [], "drafted_letters": [], "skipped_irrelevant": 0, "skipped_cross_source": 0})
+        app.invoke({
+            "raw_offers": [], "stats": [], "queries": {}, "new_offers": [], "n_new_by_source": {},
+            "scored_offers": [], "drafted_letters": [], "skipped_red_flag": [], "contacts_found": [],
+            "skipped_irrelevant": 0, "skipped_cross_source": 0, "skipped_formation": 0,
+        })
     except Exception:
         log.error("discovery failed:\n%s", traceback.format_exc())
         notify_all(
@@ -115,6 +120,22 @@ def _run_discovery() -> None:
             )
     except Exception:
         log.error("link check failed:\n%s", traceback.format_exc())
+
+    # Best-effort, never blocks the scheduled run either -- a quota check is
+    # just a database read plus, at most, a notification.
+    try:
+        from core.api_usage import check_quota_alerts
+        for alert in check_quota_alerts(QUOTA_ALERT_THRESHOLD_PCT):
+            message = (f"{alert['label']}: {alert['used']}/{alert['limit']} used this month, "
+                       f"{alert['remaining']} remaining (~{alert['pct_remaining']}%).")
+            log.info("[quota] alert: %s", message)
+            notify_all(
+                alert["title"], message,
+                embed=base_embed(f"{alert['label']} quota low", color=COLOR_ERROR, description=message),
+                kind="quota",
+            )
+    except Exception:
+        log.error("quota alert check failed:\n%s", traceback.format_exc())
 
 
 def _run_email_watch() -> None:

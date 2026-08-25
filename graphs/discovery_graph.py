@@ -1,7 +1,9 @@
 """discovery_graph -- the offer discovery pipeline.
 
-fetch_jobspy / fetch_lba / fetch_adzuna / fetch_francetravail / fetch_labonneboite / fetch_ats
-(parallel) -> dedupe -> persist_new -> score -> draft_letters -> log_run.
+choose_keywords -> fetch_jobspy / fetch_adzuna / fetch_francetravail (the 3
+free-text sources, gated on choose_keywords) + fetch_lba / fetch_labonneboite /
+fetch_ats (ungated, no keyword involved) (parallel) -> dedupe -> persist_new
+-> score -> draft_letters -> log_run.
 
 JobSpy (scraping, no key required, see tools/sources_jobspy.py) is the only
 source active by default. The next four are official French APIs, each
@@ -10,12 +12,21 @@ the fetch node logs it and moves on): La Bonne Alternance and France Travail
 "Offres d'emploi v2" (apprenticeship, France only), Adzuna (general-purpose,
 multi-country but tuned for France here), La Bonne Boite (spontaneous-
 application leads, access subject to manual approval by France Travail --
-see tools/sources_labonneboite.py). The search term and target cities come
-from user_profile (target_roles / target_locations), never hardcoded -- see
-core/profile.py for how that profile gets filled in (a CV or free text
-through chat). La Bonne Alternance/La Bonne Boite search by ROME code
-(LBA_ROME_CODES, .env) rather than a free-text keyword: these are fixed-
-taxonomy APIs, France Travail doesn't support free search.
+see tools/sources_labonneboite.py). Target cities come from user_profile
+(target_locations), never hardcoded -- see core/profile.py for how that
+profile gets filled in (a CV or free text through chat). La Bonne
+Alternance/La Bonne Boite search by ROME code (LBA_ROME_CODES, .env) rather
+than a free-text keyword: these are fixed-taxonomy APIs, France Travail
+doesn't support free search.
+
+choose_keywords_node picks the free-text keyword(s) for Adzuna/JobSpy/France
+Travail fresh on every run (KEYWORD_SOURCES) rather than a constant derived
+from user_profile.target_roles -- an LLM call informed by each source's own
+recent run_log history (keyword -> result count), instructed to diagnose a
+0/low-result run (bad keyword to reformulate, vs. a genuinely tight market
+per tools/marche_travail.py's tension indicator) instead of retrying the same
+keyword forever. Falls back to _search_terms(profile) if the LLM call fails
+or a source has no usable history yet.
 
 fetch_ats (tools/sources_ats.py, core/ats_watchlist.py) is the odd one out:
 Greenhouse/Ashby/Lever have no keyword search at all, only a per-company
@@ -60,7 +71,7 @@ from tools import (
     sources_adzuna, sources_ats, sources_francetravail, sources_jobspy,
     sources_labonneboite, sources_lba, web_search,
 )
-from tools.common import normalize_text, upsert_application
+from tools.common import SPONTANEOUS_LEAD_SOURCES, company_health_check, normalize_text, upsert_application
 from tools.discord_style import COLOR_ACTIVE, base_embed
 from tools.notify_tools import notify_all
 
@@ -148,24 +159,22 @@ def _search_terms(profile: dict) -> list[str]:
     is one literal string match against these APIs/scrapers, not an OR of two
     terms, so a profile with several target roles was only ever really
     searching for the first one in practice. Falls back to a single generic
-    term if the profile has no target role set yet."""
+    term if the profile has no target role set yet. Used as choose_keywords_node's
+    own last-resort fallback (no history yet AND the LLM call itself failed),
+    not by the fetch nodes directly anymore -- see KEYWORD_SOURCES."""
     return [r for r in (profile.get("target_roles") or []) if r] or ["emploi"]
-
-
-# LLM scoring is the bottleneck (~10-30s/offer locally) -- MAX_SCORE_PER_RUN
-# bounds how many unscored offers get processed in THIS run, regardless of how
-# many new offers were found (they all get saved anyway, see
-# persist_new_node).
-MAX_SCORE_PER_RUN = int(os.environ.get("DISCOVERY_MAX_SCORE_PER_RUN", "40"))
 
 
 class DiscoveryState(TypedDict):
     raw_offers: Annotated[list[dict], operator.add]
     stats: Annotated[list[dict], operator.add]
+    queries: dict[str, dict]
     new_offers: list[dict]
     n_new_by_source: dict
     scored_offers: list[dict]
     drafted_letters: list[dict]
+    skipped_red_flag: list[dict]
+    contacts_found: list[dict]
     skipped_irrelevant: int
     skipped_cross_source: int
     skipped_formation: int
@@ -175,7 +184,170 @@ def _log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def _run_fetch(source: str, label: str, offers: list, fill, query: str | None = None) -> dict:
+# Sources whose free-text keyword is chosen by the AI on every run rather than
+# fixed in code -- see choose_keywords_node. LBA and La Bonne Boite are
+# excluded (fixed ROME code, not free text, see LBA_ROME_CODES).
+KEYWORD_SOURCES = ("adzuna", "jobspy", "francetravail")
+
+
+def _query_history(source: str, limit: int = 8) -> list[dict]:
+    """This source's most recent runs that logged a keyword -- feeds
+    choose_keywords_node's judgment of whether a keyword is "working" or not."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT query, query_reasoning, n_found FROM run_log
+               WHERE source = ? AND query IS NOT NULL ORDER BY id DESC LIMIT ?""",
+            (source, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _fallback_queries(history: list[dict], profile: dict) -> list[str]:
+    """Fallback when the AI returns nothing usable for a source: the last
+    known non-empty keyword, otherwise the profile's own target roles (same
+    default _search_terms always used before this node existed). A history
+    entry can hold several keywords joined together (see _join_queries) --
+    fall back to the first one only, no need to re-split a fallback."""
+    for h in history:
+        if h.get("query"):
+            return [h["query"].split(" | ")[0]]
+    return _search_terms(profile)[:1]
+
+
+def _join_queries(queries: list[str]) -> str:
+    """Serializes a run's keywords into the single run_log.query column --
+    no schema change to go from one keyword per source to several."""
+    return " | ".join(q for q in queries if q)
+
+
+def _format_history(history: list[dict]) -> str:
+    if not history:
+        return "  (no history yet -- first run for this source)"
+    return "\n".join(
+        f'  - "{h["query"]}" -> {h["n_found"]} result(s)'
+        + (f" (previous reasoning: {h['query_reasoning']})" if h.get("query_reasoning") else "")
+        for h in history
+    )
+
+
+KEYWORD_PROMPT = """You're choosing the search keywords for this candidate's job/apprenticeship
+postings, for the next automated discovery run (in a few hours).
+
+Candidate profile:
+- Skills: {skills}
+- Target roles: {target_roles}
+
+Recent history per source (most recent first):
+
+Adzuna:
+{hist_adzuna}
+
+JobSpy (Indeed/LinkedIn):
+{hist_jobspy}
+
+France Travail (Offres d'emploi):
+{hist_francetravail}
+
+{tension_block}For EACH of the 3 sources above, choose TWO keywords to use for this run
+(free text in French, never a code): the first your current best choice
+(kept or refined from history), the second a REAL, different reformulation
+(synonym, broader term, different angle) -- not a cosmetic variant of the
+first (e.g. just adding/removing one word). The point of having two queries
+is to cover more ground this run, not to search for the same thing twice.
+Explain in one sentence why, for both together.
+
+Rules:
+- If a source has 0 or very few results for several runs in a row with the
+  same keywords, don't reuse them as-is: broaden them (a more generic term),
+  reformulate them (synonym, spelling variant), or change angle -- UNLESS the
+  market-tension indicator above clearly points to low tension for this
+  profession/zone, in which case a low result count is normal and it's
+  better to stay faithful to the candidate's profile than to drift away from
+  it just to pad out results.
+- WARNING: a result count that's stable across several runs in a row is NOT
+  by itself proof the keywords are the best possible choice -- it only
+  proves they haven't gotten worse. If the same keywords have stayed
+  unchanged for the last 3 runs AND their result count stays low (under
+  about ten), test a reformulation THIS run even if it looks "stable and
+  fine" -- this isn't a regression, you can always go back next run if the
+  reformulation does worse. A keyword never put up against an alternative is
+  never really confirmed.
+- If a source is getting good results (about ten or more), keep the same
+  keywords or refine them slightly -- no need to change everything every run.
+- Keywords must always stay consistent with the candidate's profile, never
+  an off-topic subject just to get results.
+
+Reply with ONLY JSON:
+{{"adzuna": {{"queries": ["...", "..."], "reasoning": "..."}},
+  "jobspy": {{"queries": ["...", "..."], "reasoning": "..."}},
+  "francetravail": {{"queries": ["...", "..."], "reasoning": "..."}}}}"""
+
+
+def choose_keywords_node(state: DiscoveryState) -> dict:
+    """Replaces the constant, profile-derived keyword (_search_terms, used
+    until this node existed) with an AI choice made fresh on every run,
+    informed by each source's own run_log history -- see KEYWORD_PROMPT for
+    the diagnostic logic (bad keyword vs. a genuinely tight market)."""
+    profile = get_user_profile() or {"skills": [], "target_roles": [], "target_locations": []}
+    history = {source: _query_history(source) for source in KEYWORD_SOURCES}
+
+    # The market-tension indicator (France Travail "Marche du travail" API,
+    # tools/marche_travail.py) is only consulted when at least one source is
+    # recently running dry -- no need to call it every run when things are fine.
+    tension_block = ""
+    if any((history[s][0]["n_found"] if history[s] else None) in (0, None) or
+           (history[s] and history[s][0]["n_found"] <= 2) for s in KEYWORD_SOURCES):
+        from tools import marche_travail
+        zone = _resolve_target_locations(profile)[0]["label"]
+        tension = marche_travail.tension_indicator(LBA_ROME_CODES, zone)
+        if tension:
+            tension_block = f"Market tension indicator (target profession, {zone}): {tension}\n\n"
+
+    try:
+        result = chat_json(KEYWORD_PROMPT.format(
+            skills=", ".join(profile["skills"]),
+            target_roles=", ".join(profile["target_roles"]),
+            hist_adzuna=_format_history(history["adzuna"]),
+            hist_jobspy=_format_history(history["jobspy"]),
+            hist_francetravail=_format_history(history["francetravail"]),
+            tension_block=tension_block,
+        ))
+        queries = {}
+        for source in KEYWORD_SOURCES:
+            entry = result.get(source) or {}
+            raw = [q.strip() for q in (entry.get("queries") or []) if (q or "").strip()]
+            # Dedupe (the model sometimes repeats the same query in two
+            # near-identical forms despite the instruction) -- never more
+            # than 2 per source.
+            deduped: list[str] = []
+            for q in raw:
+                if q not in deduped:
+                    deduped.append(q)
+            queries[source] = {
+                "queries": deduped[:2] or _fallback_queries(history[source], profile),
+                "reasoning": (entry.get("reasoning") or "").strip(),
+            }
+    except Exception as e:
+        _log(f"[choose_keywords] LLM call failed ({e}) -> falling back to each source's last known keyword")
+        queries = {
+            source: {"queries": _fallback_queries(history[source], profile), "reasoning": "fallback (AI choice unavailable)"}
+            for source in KEYWORD_SOURCES
+        }
+
+    for source in KEYWORD_SOURCES:
+        _log(f"[choose_keywords] {source} -> {queries[source]['queries']} ({queries[source]['reasoning']})")
+    return {"queries": queries}
+
+
+# LLM scoring is the bottleneck (~10-30s/offer locally) -- MAX_SCORE_PER_RUN
+# bounds how many unscored offers get processed in THIS run, regardless of how
+# many new offers were found (they all get saved anyway, see
+# persist_new_node).
+MAX_SCORE_PER_RUN = int(os.environ.get("DISCOVERY_MAX_SCORE_PER_RUN", "40"))
+
+
+def _run_fetch(source: str, label: str, offers: list, fill, query: str | None = None,
+                query_reasoning: str | None = None) -> dict:
     """Shared try/except/else + logging + stats-dict shape for every
     fetch_*_node below. `fill()` appends into `offers` (declared by the
     caller -- each source's search_term/location/page nesting differs too
@@ -198,6 +370,8 @@ def _run_fetch(source: str, label: str, offers: list, fill, query: str | None = 
     stat = {"source": source, "n_found": len(offers), "error": error}
     if query is not None:
         stat["query"] = query
+    if query_reasoning is not None:
+        stat["query_reasoning"] = query_reasoning
     return {"raw_offers": offers, "stats": [stat]}
 
 
@@ -208,7 +382,8 @@ def fetch_jobspy_node(state: DiscoveryState) -> dict:
         return {"raw_offers": [], "stats": []}
 
     profile = get_user_profile() or {"skills": [], "target_roles": [], "target_locations": []}
-    search_terms = _search_terms(profile)
+    query_entry = state["queries"]["jobspy"]
+    search_terms = query_entry["queries"]
     country = os.environ.get("JOBSPY_COUNTRY", "France")
     # JobSpy geolocates better with the country spelled out in the query --
     # verified live: "Lyon" alone returns 0 results where "Lyon, France" finds some.
@@ -228,7 +403,8 @@ def fetch_jobspy_node(state: DiscoveryState) -> dict:
             for location in locations:
                 offers.extend(sources_jobspy.search_offers(search_term=search_term, location=location, hours_old=hours_old))
 
-    return _run_fetch("jobspy", "JobSpy", offers, fill, query=" | ".join(search_terms))
+    return _run_fetch("jobspy", "JobSpy", offers, fill, query=_join_queries(search_terms),
+                       query_reasoning=query_entry["reasoning"])
 
 
 def fetch_lba_node(state: DiscoveryState) -> dict:
@@ -262,7 +438,8 @@ def fetch_adzuna_node(state: DiscoveryState) -> dict:
         _log(f"[fetch] Adzuna -> backed off until {until}, skipped (not attempted)")
         return {"raw_offers": [], "stats": []}
     profile = get_user_profile() or {"target_roles": [], "target_locations": []}
-    queries = _search_terms(profile)
+    query_entry = state["queries"]["adzuna"]
+    queries = query_entry["queries"]
     sparse = _is_db_sparse()
     max_days_old = ADZUNA_SPARSE_MAX_DAYS_OLD if sparse else None
     _log(f"[fetch] Adzuna ({queries}{', widened window: sparse db' if sparse else ''})...")
@@ -284,7 +461,8 @@ def fetch_adzuna_node(state: DiscoveryState) -> dict:
                     if len(page_offers) < 15:
                         break
 
-    return _run_fetch("adzuna", "Adzuna", offers, fill, query=" | ".join(queries))
+    return _run_fetch("adzuna", "Adzuna", offers, fill, query=_join_queries(queries),
+                       query_reasoning=query_entry["reasoning"])
 
 
 def fetch_francetravail_node(state: DiscoveryState) -> dict:
@@ -296,7 +474,8 @@ def fetch_francetravail_node(state: DiscoveryState) -> dict:
         _log(f"[fetch] France Travail -> backed off until {until}, skipped (not attempted)")
         return {"raw_offers": [], "stats": []}
     profile = get_user_profile() or {"target_roles": [], "target_locations": []}
-    queries = _search_terms(profile)
+    query_entry = state["queries"]["francetravail"]
+    queries = query_entry["queries"]
     _log(f"[fetch] France Travail ({queries})...")
     offers = []
 
@@ -305,7 +484,8 @@ def fetch_francetravail_node(state: DiscoveryState) -> dict:
             for loc in _resolve_target_locations(profile):
                 offers.extend(sources_francetravail.search_offers(mots_cles=query, ville=loc["label"]))
 
-    return _run_fetch("francetravail", "France Travail", offers, fill, query=" | ".join(queries))
+    return _run_fetch("francetravail", "France Travail", offers, fill, query=_join_queries(queries),
+                       query_reasoning=query_entry["reasoning"])
 
 
 def fetch_labonneboite_node(state: DiscoveryState) -> dict:
@@ -738,13 +918,27 @@ def draft_letters_node(state: DiscoveryState) -> dict:
     a letter draft WITHOUT being asked -- never a send, just a file in
     outputs/ + a row in `applications` (status='draft'). Sweeps the entire
     database (not just this run) to also catch up on already-scored offers,
-    capped per run to avoid triggering a burst of generations all at once."""
+    capped per run to avoid triggering a burst of generations all at once.
+
+    Before drafting, checks the company's Pappers health signals
+    (company_health_check) -- a company in liquidation/redressement
+    judiciaire gets skipped entirely (no letter, no CV, no contact lookup):
+    writing a letter for a company that may not really exist anymore isn't
+    useful, whatever its score.
+
+    For a "spontaneous application" lead (SPONTANEOUS_LEAD_SOURCES -- no
+    actual posting to reply to), also looks up a company contact
+    automatically (tools/contact_research.py) once it clears the same
+    score threshold: for this offer type, a contact is the only concrete
+    thing to act on, there's no listing to apply through."""
     profile = get_user_profile() or {"skills": [], "target_roles": [], "target_locations": []}
     full_name = profile.get("full_name") or "[Your name]"
     drafted = []
+    skipped_red_flag = []
+    contacts_found = []
     with get_connection() as conn:
         candidates = conn.execute(
-            """SELECT id, title, company, location, description, score FROM offers
+            """SELECT id, title, company, location, description, score, source FROM offers
                WHERE score >= ? AND status NOT IN ('applied', 'excluded', 'expired')
                AND id NOT IN (
                    SELECT offer_id FROM applications WHERE cover_letter_path IS NOT NULL
@@ -757,6 +951,12 @@ def draft_letters_node(state: DiscoveryState) -> dict:
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
         for offer in candidates:
+            sante = company_health_check(conn, offer["id"], offer["company"])
+            if sante and sante.get("red_flag"):
+                skipped_red_flag.append({**dict(offer), "red_flag": sante["red_flag"]})
+                _log(f"[letter] #{offer['id']} {offer['title']} -> skipped ({sante['red_flag']})")
+                continue
+
             try:
                 hint = f"{offer['title'] or ''} {offer['location'] or ''}".strip()
                 infos_entreprise = web_search.search_company(offer["company"] or "", hint=hint)
@@ -791,7 +991,23 @@ def draft_letters_node(state: DiscoveryState) -> dict:
                 _log(f"[letter] #{offer['id']} {offer['title']} ({offer['score']}) -> {path}")
             except Exception as e:
                 _log(f"[letter] #{offer['id']} -> failed: {e}")
-    return {"drafted_letters": drafted}
+
+            if offer["source"] in SPONTANEOUS_LEAD_SOURCES:
+                try:
+                    from tools import contact_research
+                    resultat = contact_research.recherche_contact(
+                        offer["company"] or "", offer["location"] or "", offer["id"],
+                    )
+                    if not resultat["from_cache"] and (resultat["n_emails"] or resultat["n_dirigeants"]):
+                        contacts_found.append({
+                            **dict(offer), "n_emails": resultat["n_emails"],
+                            "n_dirigeants": resultat["n_dirigeants"], "domaine": resultat["domaine"],
+                        })
+                        _log(f"[contact] #{offer['id']} {offer['company']} -> "
+                             f"{resultat['n_emails']} email(s), {resultat['n_dirigeants']} representative(s)")
+                except Exception as e:
+                    _log(f"[contact] #{offer['id']} -> failed: {e}")
+    return {"drafted_letters": drafted, "skipped_red_flag": skipped_red_flag, "contacts_found": contacts_found}
 
 
 HIGHLIGHT_SCORE_THRESHOLD = int(os.environ.get("DISCOVERY_HIGHLIGHT_SCORE", "70"))
@@ -824,15 +1040,17 @@ def log_run_node(state: DiscoveryState) -> dict:
             if backoff_until:
                 _log(f"[circuit-breaker] {stat['source']} failing -> backed off until {backoff_until}")
             conn.execute(
-                """INSERT INTO run_log (run_type, source, finished_at, n_found, n_new, errors, backoff_until, query)
-                   VALUES ('discovery', ?, datetime('now'), ?, ?, ?, ?, ?)""",
+                """INSERT INTO run_log (run_type, source, finished_at, n_found, n_new, errors, backoff_until, query, query_reasoning)
+                   VALUES ('discovery', ?, datetime('now'), ?, ?, ?, ?, ?, ?)""",
                 (stat["source"], stat.get("n_found", 0), _n_new_for_stat_source(n_new_by_source, stat["source"]),
-                 error, backoff_until, stat.get("query")),
+                 error, backoff_until, stat.get("query"), stat.get("query_reasoning")),
             )
 
     scored = state.get("scored_offers") or []
     letters = state.get("drafted_letters") or []
-    if scored or letters:
+    skipped_red_flag = state.get("skipped_red_flag") or []
+    contacts_found = state.get("contacts_found") or []
+    if scored or letters or skipped_red_flag or contacts_found:
         n_new = len(state.get("new_offers") or [])
         title = f"hobot -- {n_new} new offer(s), {len(scored)} scored"
         lines = []
@@ -871,6 +1089,30 @@ def log_run_node(state: DiscoveryState) -> dict:
                     value=f"**{best.get('score')}** -- {best['title']} ({best['company']})",
                     inline=False,
                 )
+        if contacts_found:
+            lines.append(f"{len(contacts_found)} contact(s) found for spontaneous-application lead(s):")
+            lines += [
+                f"{c['company']} -- {c['n_emails']} email(s), {c['n_dirigeants']} representative(s)"
+                + (f" ({c['domaine']})" if c.get("domaine") else "")
+                for c in contacts_found
+            ]
+            notified_ids += [c["id"] for c in contacts_found if c.get("id") is not None]
+            embed.add_field(
+                name="Contacts found (spontaneous-application leads)",
+                value="\n".join(
+                    f"**{c['company']}** -- {c['n_emails']} email(s), {c['n_dirigeants']} representative(s)"
+                    for c in contacts_found
+                )[:1024],
+                inline=False,
+            )
+        if skipped_red_flag:
+            lines.append(f"{len(skipped_red_flag)} letter(s) skipped (company health warning):")
+            lines += [f"{o['title']} -- {o['company']} ({o['red_flag']})" for o in skipped_red_flag]
+            embed.add_field(
+                name="Letters skipped (company health warning)",
+                value="\n".join(f"**{o['company']}** -- {o['red_flag']}" for o in skipped_red_flag)[:1024],
+                inline=False,
+            )
         skipped_irrelevant = state.get("skipped_irrelevant") or 0
         skipped_cross_source = state.get("skipped_cross_source") or 0
         skipped_formation = state.get("skipped_formation") or 0
@@ -891,6 +1133,7 @@ def log_run_node(state: DiscoveryState) -> dict:
 
 def build_graph():
     graph = StateGraph(DiscoveryState)
+    graph.add_node("choose_keywords", choose_keywords_node)
     graph.add_node("fetch_jobspy", fetch_jobspy_node)
     graph.add_node("fetch_lba", fetch_lba_node)
     graph.add_node("fetch_adzuna", fetch_adzuna_node)
@@ -903,7 +1146,11 @@ def build_graph():
     graph.add_node("draft_letters", draft_letters_node)
     graph.add_node("log_run", log_run_node)
 
-    for fetch_node in ("fetch_jobspy", "fetch_lba", "fetch_adzuna", "fetch_francetravail", "fetch_labonneboite", "fetch_ats"):
+    graph.add_edge(START, "choose_keywords")
+    for fetch_node in ("fetch_jobspy", "fetch_adzuna", "fetch_francetravail"):
+        graph.add_edge("choose_keywords", fetch_node)
+        graph.add_edge(fetch_node, "dedupe")
+    for fetch_node in ("fetch_lba", "fetch_labonneboite", "fetch_ats"):
         graph.add_edge(START, fetch_node)
         graph.add_edge(fetch_node, "dedupe")
     graph.add_edge("dedupe", "persist_new")
@@ -917,7 +1164,11 @@ def build_graph():
 if __name__ == "__main__":
     init_db()
     app = build_graph()
-    result = app.invoke({"raw_offers": [], "stats": [], "new_offers": [], "n_new_by_source": {}, "scored_offers": [], "drafted_letters": [], "skipped_irrelevant": 0, "skipped_cross_source": 0, "skipped_formation": 0})
+    result = app.invoke({
+        "raw_offers": [], "stats": [], "queries": {}, "new_offers": [], "n_new_by_source": {},
+        "scored_offers": [], "drafted_letters": [], "skipped_red_flag": [], "contacts_found": [],
+        "skipped_irrelevant": 0, "skipped_cross_source": 0, "skipped_formation": 0,
+    })
 
     print(f"Sources: {result['stats']}")
     print(f"{len(result['new_offers'])} new offers found, {len(result['scored_offers'])} scored this run\n")
