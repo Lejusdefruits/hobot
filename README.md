@@ -279,21 +279,34 @@ ANTHROPIC_MODEL=claude-sonnet-5
 `LLM_PROVIDER=ollama` (the default) ignores both blocks entirely -- there's
 no need to remove them if you switch back later.
 
-Chat/`/ask` conversation history sent to the model each turn
-(`CHAT_AGENT_MAX_CONTEXT_TOKENS`) defaults to 400 tokens on any cloud
-provider, versus 6000 on Ollama -- measured directly against a real 429 from
-Groq's free tier: this project's ~41 tool schemas alone (bound on every
-call, unrelated to conversation history) already use roughly 7000-7500 of
-its 8000-tokens-per-*minute* cap for `openai/gpt-oss-120b`, leaving only a
-few hundred tokens of real headroom, not the few thousand a higher default
-would assume. In practice this means close to no memory of earlier turns in
-the same conversation on a tight cloud plan -- a real capability loss, but
-one that beats a chat feature that looks like it remembers and then
-randomly errors out a turn or two in. hobot's actual state (offers,
-applications, profile) lives in the database regardless, so a single
-self-contained request still works the same either way; it's specifically a
-follow-up referencing something said earlier that stops working. Raise it
-in `.env` if your plan has real headroom to spare.
+Two things keep chat/`/ask` usable on a rate-limited cloud plan, measured
+directly against a real 429 from Groq's free tier for `openai/gpt-oss-120b`
+(8000 tokens/minute) -- its ~41 tool schemas alone, bound on every call and
+completely unrelated to conversation history, already ate roughly
+7000-7500 tokens of that cap on their own:
+
+- **`CHAT_AGENT_TOOL_SELECTION`** (on by default, cloud providers only --
+  Ollama always gets the full list): instead of binding all ~41 tools every
+  call, binds only the ones that look relevant to the current message
+  (plain keyword match against each tool's name/description, no extra
+  LLM/embedding call) plus a small always-included core set
+  (`CHAT_AGENT_TOOL_SELECTION_TOP_K`, 12 by default). The real risk: a
+  multi-step request whose later tool need wasn't obvious from the keyword
+  match simply won't have that tool available.
+- **`CHAT_AGENT_MAX_CONTEXT_TOKENS`** (recent chat history sent to the model
+  each turn -- the full conversation always stays in `checkpoints.db`
+  regardless, this only bounds what's replayed): 6000 on Ollama, 2500 on a
+  cloud provider with tool selection on, 400 with it off -- the value
+  measured safe against Groq's free tier for the full 41-tool list. Even at
+  2500, a tight cloud plan means less cross-turn memory than Ollama's 6000;
+  hobot's actual state (offers, applications, profile) lives in the
+  database regardless, so a single self-contained request still works the
+  same either way -- it's specifically a follow-up referencing something
+  said earlier that's most affected.
+
+Raise `CHAT_AGENT_MAX_CONTEXT_TOKENS` in `.env` if your plan has real
+headroom to spare, or set `CHAT_AGENT_TOOL_SELECTION=0` to compare against
+the full tool list.
 
 ### 2. Clone the repo and install dependencies
 

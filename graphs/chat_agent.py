@@ -33,6 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from langchain_core.messages import trim_messages
+from langchain_core.runnables import Runnable
 from langchain_core.tools import tool
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.prebuilt import create_react_agent
@@ -1252,11 +1253,105 @@ Non-negotiable rules:
 # os.environ.get(key, default) only falls back on a genuinely absent key, an
 # empty string is still "present" and would make int("") raise instead (the
 # same empty-vs-absent trap core/profile.py's CV_PATH handling documents).
+# Tool selection: cloud providers only (TOOL_SELECTION_ENABLED is forced off
+# for Ollama below, regardless of this flag) -- Ollama already has all the
+# headroom it needs via OLLAMA_NUM_CTX, so narrowing its tool list would
+# only add correctness risk (a needed tool not making the cut) for zero
+# benefit. The ~41 tool schemas bound on every call are the dominant fixed
+# cost on a tight cloud budget (see MAX_CONTEXT_TOKENS below) -- binding
+# only the tools that look relevant to the CURRENT message, instead of all
+# 41 every time, is what actually frees up real room for conversation
+# history again on a plan like Groq's free tier.
+#
+# Deliberately lightweight, no extra LLM/embedding call (that would add
+# latency and eat into the same tight quota this is trying to protect):
+# plain keyword overlap between the latest user message and each tool's
+# name (French, like "rechercher_offres" -- matches French questions
+# directly) plus its description (English). No stopword list or stemming --
+# a few incidental short-word matches mostly tie across every tool equally,
+# they don't meaningfully bias the ranking.
+#
+# The real risk, and it's real: if the keyword overlap misses whatever tool
+# a multi-step request actually needs partway through (the model finds out
+# it needs rechercher_entreprise only after reading an offer's details, say),
+# that tool simply isn't available to call -- a harder failure than the
+# trimmed-history tradeoff above, since the model can't always tell the user
+# what capability it's missing. CHAT_AGENT_TOOL_SELECTION_TOP_K and
+# CHAT_AGENT_TOOL_SELECTION exist specifically to tune or disable this after
+# testing it against what real conversations actually need.
+TOOL_SELECTION_ENABLED = (
+    LLM_PROVIDER != "ollama" and os.environ.get("CHAT_AGENT_TOOL_SELECTION", "1") == "1"
+)
+TOOL_SELECTION_TOP_K = int(os.environ.get("CHAT_AGENT_TOOL_SELECTION_TOP_K", "12"))
+
+# Always bound regardless of keyword match: profil_candidat because the
+# system prompt's own first rule depends on checking it before most other
+# actions, rechercher_offres as the single most likely intent behind a
+# short/ambiguous message, statut_veille since "is anything happening" is a
+# common orientation question with no obvious keyword overlap of its own.
+_CORE_TOOL_NAMES = {"profil_candidat", "rechercher_offres", "statut_veille"}
+
+_WORD_RE = re.compile(r"[a-zà-ÿ]{3,}")
+
+
+def _tokenize(text: str) -> set[str]:
+    return set(_WORD_RE.findall(text.lower()))
+
+
+_TOOL_KEYWORDS = {
+    t.name: _tokenize(t.name.replace("_", " ") + " " + (t.description or ""))
+    for t in TOOLS
+}
+
+
+def _select_relevant_tools(messages: list) -> list:
+    query = ""
+    for m in reversed(messages):
+        if getattr(m, "type", None) == "human" and isinstance(m.content, str):
+            query = m.content
+            break
+    query_words = _tokenize(query)
+
+    scored = sorted(
+        TOOLS, key=lambda t: len(query_words & _TOOL_KEYWORDS[t.name]), reverse=True
+    )
+
+    selected = [t for t in TOOLS if t.name in _CORE_TOOL_NAMES]
+    selected_names = {t.name for t in selected}
+    for t in scored:
+        if len(selected) >= TOOL_SELECTION_TOP_K:
+            break
+        if t.name not in selected_names:
+            selected.append(t)
+            selected_names.add(t.name)
+    return selected
+
+
+# .strip() + truthiness check, not a plain os.environ.get(key, default):
+# .env.example ships this line present but empty (CHAT_AGENT_MAX_CONTEXT_TOKENS=)
+# specifically so the provider-aware default below applies out of the box --
+# os.environ.get(key, default) only falls back on a genuinely absent key, an
+# empty string is still "present" and would make int("") raise instead (the
+# same empty-vs-absent trap core/profile.py's CV_PATH handling documents).
+#
+# The cloud default is conditional on TOOL_SELECTION_ENABLED, not a single
+# fixed number: ~12 tools (TOOL_SELECTION_TOP_K's default) cost roughly a
+# third of what all 41 do -- call it ~2500 tokens generously, versus the
+# ~7000-7500 the full set uses on its own -- freeing real room for
+# conversation history again. Without tool selection active (disabled via
+# CHAT_AGENT_TOOL_SELECTION=0, e.g. while comparing behavior), the full
+# 41-tool cost is back, so the budget falls back to 400, the value measured
+# safe against Groq's free tier for the full tool list (see the long
+# comment above this block).
 _context_tokens_raw = os.environ.get("CHAT_AGENT_MAX_CONTEXT_TOKENS", "").strip()
 if _context_tokens_raw:
     MAX_CONTEXT_TOKENS = int(_context_tokens_raw)
+elif LLM_PROVIDER == "ollama":
+    MAX_CONTEXT_TOKENS = 6000
+elif TOOL_SELECTION_ENABLED:
+    MAX_CONTEXT_TOKENS = 2500
 else:
-    MAX_CONTEXT_TOKENS = 6000 if LLM_PROVIDER == "ollama" else 400
+    MAX_CONTEXT_TOKENS = 400
 
 
 def _trim_history(state: dict) -> dict:
@@ -1265,6 +1360,20 @@ def _trim_history(state: dict) -> dict:
         token_counter="approximate", include_system=True, allow_partial=False,
     )
     return {"llm_input_messages": trimmed}
+
+
+def _select_model(state: dict, runtime) -> Runnable:
+    """Dynamic model resolution (LangGraph's own create_react_agent hook,
+    called with the FULL untrimmed state, independent of _trim_history's own
+    pre_model_hook) -- the only place tool selection actually happens.
+    Selected tools are always a subset of TOOLS (LangGraph's own requirement
+    for this pattern): the ToolNode below still knows how to execute any of
+    the full 41 regardless of which subset got bound for a given call, only
+    what's offered to the model for generation on THIS turn narrows."""
+    model = get_chat_model(temperature=0.2)
+    if not TOOL_SELECTION_ENABLED:
+        return model.bind_tools(TOOLS)
+    return model.bind_tools(_select_relevant_tools(state["messages"]))
 
 
 CHECKPOINT_DB_PATH = Path(__file__).resolve().parent.parent / os.environ.get(
@@ -1285,7 +1394,7 @@ _checkpoint_conn.execute("PRAGMA busy_timeout=10000")
 _checkpointer = SqliteSaver(_checkpoint_conn)
 _checkpointer.setup()  # idempotent; called explicitly here so a broken DB file fails fast at import, not on the first /ask
 _agent = create_react_agent(
-    model=get_chat_model(temperature=0.2),
+    model=_select_model,
     tools=TOOLS,
     prompt=SYSTEM_PROMPT,
     checkpointer=_checkpointer,
