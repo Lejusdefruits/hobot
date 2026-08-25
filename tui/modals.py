@@ -264,8 +264,11 @@ class OfferDetailScreen(ModalScreen[str | None]):
             row = conn.execute("SELECT status FROM offers WHERE id = ?", (self.offer_id,)).fetchone()
             if row and row["status"] not in ("applied", "excluded"):
                 conn.execute("UPDATE offers SET status = 'excluded' WHERE id = ?", (self.offer_id,))
-        self._changed = True
-        self.refresh_detail()
+        # Unlike "Mark applied" (stays open -- drafting/opening the letter is
+        # still a reasonable next step), there's nothing left to do here once
+        # an offer's excluded, so close straight back to the list instead of
+        # leaving the user on a screen for an offer that's now dead weight.
+        self.dismiss("changed")
 
     def _tailor_cv(self) -> None:
         # An LLM call plus, for a .docx profile, a LibreOffice subprocess
