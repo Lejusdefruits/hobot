@@ -120,6 +120,10 @@ manager or installer.
 - **Checks that postings are still live**: one that's disappeared from the
   source site (position filled, listing pulled) gets flagged and dropped
   instead of sitting in the list looking just as valid as everything else.
+- **Skips a company in serious legal trouble**: before auto-drafting a
+  letter/CV, a quick Pappers check (France only) catches an ongoing
+  insolvency procedure or ceased activity and skips that one instead of
+  spending effort on a company that may not really exist anymore.
 - **Flags likely ghost jobs and unreadable generated PDFs** -- see
   [Quality checks](#quality-checks) below.
 - **Runs from Discord and/or a terminal UI**: `/status`, `/offers`,
@@ -397,10 +401,13 @@ broken in testing (glassdoor: location resolution fails outright; google:
 returns 0 results on every query tried) — see `tools/sources_jobspy.py` if
 you want to re-check them yourself later. `zip_recruiter` is untested here.
 
-If your profile has more than one target role, each one is searched
-separately against every enabled source (not merged into a single combined
-query) — feel free to list a few rather than trying to phrase one query that
-covers all of them.
+Adzuna, JobSpy, and France Travail's free-text keywords aren't fixed to your
+target roles: before each scheduled run, the AI picks up to two keywords per
+source, informed by that source's own recent result history (a keyword that's
+been stuck at 0-2 results for several runs gets reformulated instead of
+retried forever). `/strategy` (Discord) or the terminal UI's Reports tab
+shows what's actually in use and why. La Bonne Alternance and La Bonne Boite
+are unaffected -- they search by ROME code, not free text (see below).
 
 ## French job sources (optional)
 
@@ -477,6 +484,12 @@ for a company's contacts by hand, nothing changed there). The lead shows up
 in `/offers` like any other posting, gets picked up by the next scheduled
 run for scoring, and an automatic cover letter if it scores well -- nothing
 extra to do for that part.
+
+Any spontaneous-application lead that later scores well during a scheduled
+run (from any of the three sources that produce them, not just this one)
+gets the same automatic contact lookup at that point if it doesn't have one
+yet -- there's no listing to reply to for this offer type, so a contact is
+the only concrete next step, and it shows up in that run's notification.
 
 Worth knowing before adding a long list of companies: these three platforms
 skew heavily toward tech/software/startup hiring -- genuinely useful if
@@ -942,7 +955,15 @@ A few rules held everywhere in the code, not just stated here:
 - **Automatic backoff per failing source** (`core/circuit_breaker.py`): a
   source that errors out gets backed off progressively (2h, doubling on each
   failure, capped at 24h) instead of retried without limit, to stay
-  reasonable toward sites that don't appreciate repeated hits.
+  reasonable toward sites that don't appreciate repeated hits. Applies per
+  Gmail account too (mail monitoring, above) -- one broken account (a
+  revoked app password) backs off and triggers a notification on its own,
+  it doesn't just fail silently on every check forever.
+- **Proactive quota alerts**: the first time a quota-limited API (Adzuna,
+  Hunter.io, Snov.io, Pappers, Tavily) drops under 10%
+  (`QUOTA_ALERT_THRESHOLD_PCT`) of its monthly quota in a given month, a
+  notification fires -- rather than only finding out by typing `/quotas` or
+  after a call already got silently refused.
 - **Deliberately conservative link checking** (`tools/link_check.py`): only
   an unambiguous 404/410 marks a posting dead; a timeout or a 403 (often an
   anti-bot block on a perfectly live listing) changes nothing rather than
