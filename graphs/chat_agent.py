@@ -435,17 +435,28 @@ def rechercher_entreprise(nom_entreprise: str, contexte: str = "") -> str:
 
 
 @tool
-def surveiller_entreprise(nom_entreprise: str) -> str:
+def surveiller_entreprise(nom_entreprise: str, platform: str = None, slug: str = None) -> str:
     """Adds a company to the ATS watchlist (core/ats_watchlist.py) so its
-    Greenhouse/Ashby/Lever job board gets checked on every scheduled
-    discovery run from now on, alongside JobSpy/LBA/Adzuna/France Travail --
-    for a company known to use one of those three ATS platforms, not a
-    general "look this company up" tool. Resolution is best-effort (tries a
-    few common spellings of the company name against all three platforms'
-    public APIs): if nothing matches, this returns a clear explanation
-    rather than guessing, and the user can be told to check the company's
-    careers page for the exact slug if they're sure it's on one of the
-    three.
+    job board gets checked on every scheduled discovery run from now on,
+    alongside JobSpy/LBA/Adzuna/France Travail -- for a company known to use
+    one of the supported ATS platforms (Greenhouse, Ashby, Lever,
+    SmartRecruiters, Workable, Rippling, Workday, SuccessFactors), not a
+    general "look this company up" tool.
+
+    Leave platform/slug unset for the normal case: resolution is best-effort
+    (tries a few common spellings of the company name against Greenhouse/
+    Ashby/Lever/SmartRecruiters/Workable/Rippling's public APIs). If nothing
+    matches, this returns a clear explanation rather than guessing, and the
+    user can be told to check the company's careers page for the exact slug.
+
+    Workday and SuccessFactors can NEVER auto-resolve from a company name --
+    they identify a tenant by its full careers URL/hostname, not a short
+    guessable slug -- so for those two, platform/slug MUST be given
+    explicitly: platform="workday", slug=the full careers URL (e.g.
+    "https://acme.wd5.myworkdayjobs.com/careers"), or platform="successfactors",
+    slug=the recruiting-marketing hostname. Also usable as an escape hatch
+    for any platform when auto-resolution misses a real board the user
+    already knows the exact slug for.
 
     On success, also creates a spontaneous-application lead for this company
     (same idea as La Bonne Alternance/La Bonne Boite's recruiter leads,
@@ -459,7 +470,7 @@ def surveiller_entreprise(nom_entreprise: str) -> str:
     scoring and, if it scores well, an automatic cover letter -- nothing
     extra needed here for that."""
     from core.ats_watchlist import add_company
-    ok, message = add_company(nom_entreprise)
+    ok, message = add_company(nom_entreprise, platform=platform, slug=slug)
     if not ok:
         return message
 
@@ -1284,6 +1295,15 @@ def ask(message: str, thread_id: str) -> str:
                 "notably tight for larger models). Lowering CHAT_AGENT_MAX_CONTEXT_TOKENS in "
                 f".env may help; the exact error was: {e}"
             )
+        # Safety net, not the primary fix -- get_connection() (core/db.py)
+        # already waits up to 20s for a contested write before raising this,
+        # and draft_letters_node (graphs/discovery_graph.py) no longer holds
+        # a write open across slow external work the way it used to, so this
+        # should essentially never fire now. Kept in case some other slow
+        # write path shows up later -- a raw sqlite3 exception string is
+        # never a useful answer to a chat message.
+        if "database is locked" in error_text.lower():
+            return "The database was briefly busy with a scheduled run -- try again in a moment."
         return f"Error while processing the request: {e}"
 
 

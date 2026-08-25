@@ -572,18 +572,26 @@ def _relevance_keywords(target_roles: list[str]) -> list[str]:
     return list(keywords)
 
 
-def _is_relevant(title: str, description: str, keywords: list[str]) -> bool:
-    """Title first (cheap, and almost always enough); description only as a
+def _is_relevant(title: str, description: str, keywords: list[str], target_roles: list[str]) -> bool:
+    """Title first (cheap, and almost always enough); description as a
     fallback when the title alone doesn't match -- catches a genuinely
     relevant posting whose title is too generic to tell (La Bonne
     Alternance's own spontaneous-lead titles are a plain sector label, e.g.
     "Candidature spontanee -- Programmation informatique", never the
-    profile's own wording)."""
+    profile's own wording). Semantic similarity (tools/semantic_relevance.py)
+    is the last resort, only reached when both keyword checks fail --
+    opt-in (RELEVANCE_SEMANTIC_FALLBACK, off by default) and returns None
+    rather than running at all when it's off or its dependency isn't
+    installed, so this stays keyword-only for anyone who hasn't opted in."""
     if not keywords:
         return True
     if any(kw in normalize_text(title) for kw in keywords):
         return True
-    return any(kw in normalize_text(description) for kw in keywords)
+    if any(kw in normalize_text(description) for kw in keywords):
+        return True
+    from tools.semantic_relevance import is_relevant_semantic
+    semantic = is_relevant_semantic(f"{title or ''} {description or ''}".strip(), target_roles)
+    return bool(semantic)
 
 
 # Some listings aren't real employer postings but ads from a training
@@ -703,7 +711,7 @@ def dedupe_node(state: DiscoveryState) -> dict:
             ).fetchone()
             if row:
                 conn.execute("UPDATE offers SET last_seen_at = datetime('now') WHERE id = ?", (row["id"],))
-            elif not _is_relevant(offer.get("title"), offer.get("description"), keywords):
+            elif not _is_relevant(offer.get("title"), offer.get("description"), keywords, profile["target_roles"]):
                 skipped_irrelevant += 1
             elif _is_formation_intermediary(offer.get("description")):
                 skipped_formation += 1
@@ -1001,18 +1009,37 @@ def draft_letters_node(state: DiscoveryState) -> dict:
                 app_id = upsert_application(
                     conn, offer["id"], defaults={"status": "draft"}, cover_letter_path=str(path),
                 )
-                # Best-effort, never blocks a letter that already succeeded --
-                # returns None (no CV uploaded via /profile yet, or the
-                # tailoring attempt itself failed) far more often than not on
-                # a fresh install, that's expected, not an error.
-                from tools.cv_tailor import tailor_cv
-                cv = tailor_cv(offer["id"], offer["title"] or "", offer["description"] or "")
-                if cv:
-                    conn.execute("UPDATE applications SET cv_path = ? WHERE id = ?", (str(cv), app_id))
-                    _log(f"[cv] #{offer['id']} tailored -> {cv}")
+                # Committed right here, before tailor_cv -- this loop reuses
+                # the same `conn` across every candidate, and tailor_cv can
+                # run LibreOffice for up to 60s (tools/cv_tailor.py). Leaving
+                # upsert_application's write uncommitted across that call
+                # held hobot.db's write lock open long enough that a
+                # concurrent /ask write (marquer_postule, modifier_profil,
+                # ...) could exceed get_connection()'s busy_timeout and
+                # surface a raw "database is locked" error -- confirmed
+                # live. Every other write path in this project already
+                # commits before doing slow external work; this one didn't.
                 conn.commit()
                 drafted.append(dict(offer))
                 _log(f"[letter] #{offer['id']} {offer['title']} ({offer['score']}) -> {path}")
+
+                # Best-effort, its own nested try/except: a slow or failing
+                # CV-tailoring attempt must never be reported as the letter
+                # itself having failed (the letter above already succeeded
+                # and is already committed), and must never leave a write
+                # open across tailor_cv's own slow external work either.
+                # Returns None (no CV uploaded via /profile yet, or the
+                # tailoring attempt itself failed) far more often than not
+                # on a fresh install, that's expected, not an error.
+                try:
+                    from tools.cv_tailor import tailor_cv
+                    cv = tailor_cv(offer["id"], offer["title"] or "", offer["description"] or "")
+                    if cv:
+                        conn.execute("UPDATE applications SET cv_path = ? WHERE id = ?", (str(cv), app_id))
+                        conn.commit()
+                        _log(f"[cv] #{offer['id']} tailored -> {cv}")
+                except Exception as e:
+                    _log(f"[cv] #{offer['id']} -> failed: {e}")
             except Exception as e:
                 _log(f"[letter] #{offer['id']} -> failed: {e}")
 

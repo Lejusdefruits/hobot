@@ -180,10 +180,15 @@ SOURCE_LABELS = {
     "jobspy_linkedin": "JobSpy (LinkedIn)",
     "francetravail": "France Travail",
     "labonneboite": "La Bonne Boite (spontaneous-application lead)",
-    "ats": "ATS watchlist (Greenhouse/Ashby/Lever)",
+    "ats": "ATS watchlist (Greenhouse/Ashby/Lever/SmartRecruiters/Workable/Rippling/Workday/SuccessFactors)",
     "ats_greenhouse": "ATS watchlist (Greenhouse)",
     "ats_ashby": "ATS watchlist (Ashby)",
     "ats_lever": "ATS watchlist (Lever)",
+    "ats_smartrecruiters": "ATS watchlist (SmartRecruiters)",
+    "ats_workable": "ATS watchlist (Workable)",
+    "ats_rippling": "ATS watchlist (Rippling)",
+    "ats_workday": "ATS watchlist (Workday)",
+    "ats_successfactors": "ATS watchlist (SuccessFactors)",
     "ats_lead": "ATS watchlist (spontaneous-application lead)",
 }
 

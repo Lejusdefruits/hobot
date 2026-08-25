@@ -1,12 +1,27 @@
-"""Greenhouse / Ashby / Lever connector -- per-company, not a keyword
-search: each of these three ATS platforms exposes a free, unauthenticated
-JSON feed of a SINGLE company's current openings, keyed by that company's
-own "board slug" (visible in its public careers page URL, e.g.
-boards.greenhouse.io/{slug}, jobs.ashbyhq.com/{slug}, jobs.lever.co/{slug}).
-There is no "search every company on Greenhouse" endpoint -- resolve_slug()
-below is the best-effort bridge from a plain company name to a working slug
-on one of the three, by trying it directly against each API. No API key for
-any of the three; all three verified live while building this.
+"""Greenhouse / Ashby / Lever / SmartRecruiters / Workable / Rippling / Workday /
+SuccessFactors connector -- per-company, not a keyword search: each of these
+platforms exposes a free, unauthenticated feed of a SINGLE company's current
+openings, keyed by that company's own "board slug" (visible in its public
+careers page URL, e.g. boards.greenhouse.io/{slug}, jobs.ashbyhq.com/{slug},
+jobs.lever.co/{slug}). There is no "search every company on Greenhouse"
+endpoint -- resolve_slug() below is the best-effort bridge from a plain
+company name to a working slug, by trying it directly against each API. No
+API key for any of them.
+
+Greenhouse/Ashby/Lever are hand-rolled here (each platform's raw JSON shape
+parsed directly in normalize_job() below); SmartRecruiters/Workable/Rippling/
+Workday/SuccessFactors instead go through ats-scrapers
+(https://github.com/kalil0321/ats-scrapers), which already normalizes every
+platform's raw response into one common ``Job`` shape -- no per-platform
+parsing needed for those five, see the second half of normalize_job().
+
+Workday and SuccessFactors are NOT in _GUESSABLE_PLATFORMS: both need the
+company's full careers URL/hostname as their "slug", not a short guessable
+name (see their own _try_workday/_try_successfactors docstrings below), so
+resolve_slug()'s spelling-guess loop can't reach them -- add_company()
+(core/ats_watchlist.py) still accepts them via its explicit platform/slug
+override, reachable from surveiller_entreprise's own platform/slug
+parameters (graphs/chat_agent.py).
 
 Companies to check come from core/ats_watchlist.py (a static default list in
 .env plus whatever's been added since through the chat tool), never a
@@ -17,6 +32,8 @@ import html
 import re
 
 import requests
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers.base import get_scraper as _get_ats_scraper
 
 TIMEOUT = 10
 
@@ -61,7 +78,58 @@ def _try_lever(slug: str) -> list[dict] | None:
     return resp.json()  # bare array, unlike the other two -- see module docstring
 
 
-_PLATFORM_FETCHERS = {"greenhouse": _try_greenhouse, "ashby": _try_ashby, "lever": _try_lever}
+def _try_ats_scrapers(ats: ATSType):
+    """Builds a _try_* fetcher on top of ats-scrapers for one platform --
+    unlike _try_greenhouse/_try_ashby/_try_lever (which distinguish a plain
+    "not found" HTTP response from a network error, letting resolve_slug()
+    itself catch requests.RequestException), ats-scrapers uses httpx and its
+    own exception types (ScraperError, CompanyNotFoundError, ...) internally
+    -- catching broadly here and returning None either way is simpler and
+    safe: whether a guessed slug was wrong or the request itself failed,
+    resolve_slug()'s guess loop should just move on to the next candidate."""
+    def fetcher(slug: str) -> list | None:
+        try:
+            jobs = _get_ats_scraper(ats, slug).fetch()
+        except Exception:
+            return None
+        return jobs
+
+    return fetcher
+
+
+_try_smartrecruiters = _try_ats_scrapers(ATSType.SMARTRECRUITERS)
+_try_workable = _try_ats_scrapers(ATSType.WORKABLE)
+_try_rippling = _try_ats_scrapers(ATSType.RIPPLING)
+
+
+def _try_workday(slug: str) -> list | None:
+    """slug here is the company's FULL careers URL
+    (https://{company}.{instance}.myworkdayjobs.com/{site}), not a short
+    guessable name -- see ats_scrapers.scrapers.workday's own module
+    docstring for why. Never reached by resolve_slug()'s guess loop (not in
+    _GUESSABLE_PLATFORMS below); only usable via an explicit platform/slug
+    (add_company(), core/ats_watchlist.py)."""
+    return _try_ats_scrapers(ATSType.WORKDAY)(slug)
+
+
+def _try_successfactors(slug: str) -> list | None:
+    """slug here is the tenant's recruiting-marketing hostname, not a short
+    guessable name -- same reasoning and same guess-loop exclusion as
+    _try_workday above."""
+    return _try_ats_scrapers(ATSType.SUCCESSFACTORS)(slug)
+
+
+_PLATFORM_FETCHERS = {
+    "greenhouse": _try_greenhouse, "ashby": _try_ashby, "lever": _try_lever,
+    "smartrecruiters": _try_smartrecruiters, "workable": _try_workable, "rippling": _try_rippling,
+    "workday": _try_workday, "successfactors": _try_successfactors,
+}
+
+# Platforms resolve_slug() can try a spelling-guessed slug against -- see the
+# module docstring for why workday/successfactors are excluded.
+_GUESSABLE_PLATFORMS = {
+    k: v for k, v in _PLATFORM_FETCHERS.items() if k not in ("workday", "successfactors")
+}
 
 
 def _candidate_slugs(company: str) -> list[str]:
@@ -76,16 +144,19 @@ def _candidate_slugs(company: str) -> list[str]:
 
 
 def resolve_slug(company: str) -> tuple[str, str] | None:
-    """Tries a company name against all three platforms with a few plausible
-    slug spellings. Returns (platform, slug) for the first one that responds
-    with a real board (HTTP 200, whether or not it currently has openings --
-    a company's board can legitimately be empty right now), or None if
-    nothing matched anywhere. Best-effort: a company on an ATS other than
-    these three, or a slug that doesn't match any of the spelling
-    conventions tried here, won't resolve -- reported as such by the caller,
-    never silently guessed at."""
+    """Tries a company name against every guessable platform
+    (_GUESSABLE_PLATFORMS) with a few plausible slug spellings. Returns
+    (platform, slug) for the first one that responds with a real board (a
+    successful response, whether or not it currently has openings -- a
+    company's board can legitimately be empty right now), or None if nothing
+    matched anywhere. Best-effort: a company on an ATS not covered here, on
+    Workday/SuccessFactors (which need the full URL/hostname, not a
+    guessable slug -- pass that directly instead, see add_company() in
+    core/ats_watchlist.py), or under a slug that doesn't match any of the
+    spelling conventions tried here, won't resolve -- reported as such by
+    the caller, never silently guessed at."""
     for slug in _candidate_slugs(company):
-        for platform, fetch in _PLATFORM_FETCHERS.items():
+        for platform, fetch in _GUESSABLE_PLATFORMS.items():
             try:
                 jobs = fetch(slug)
             except requests.RequestException:
@@ -111,7 +182,18 @@ def fetch_company_jobs(platform: str, slug: str) -> list[dict]:
     return jobs or []
 
 
-def normalize_job(platform: str, company: str, job: dict) -> dict:
+# platform key -> hobot source tag, for the five ats-scrapers-backed
+# platforms (see the module docstring) -- their Job objects are already
+# fully normalized (title/company/location/description/url/posted_at) by
+# ats-scrapers itself, so no per-platform field parsing is needed the way
+# greenhouse/ashby/lever below still require.
+_ATS_SCRAPERS_SOURCE_TAG = {
+    "smartrecruiters": "ats_smartrecruiters", "workable": "ats_workable", "rippling": "ats_rippling",
+    "workday": "ats_workday", "successfactors": "ats_successfactors",
+}
+
+
+def normalize_job(platform: str, company: str, job) -> dict:
     from tools.common import make_offer
 
     if platform == "greenhouse":
@@ -135,5 +217,12 @@ def normalize_job(platform: str, company: str, job: dict) -> dict:
             company=company, location=categories.get("location"),
             description=job.get("descriptionPlain") or "", url=job.get("hostedUrl"),
             posted_date=str(job.get("createdAt") or ""),
+        )
+    if platform in _ATS_SCRAPERS_SOURCE_TAG:
+        return make_offer(
+            source=_ATS_SCRAPERS_SOURCE_TAG[platform], external_id=job.ats_id, title=job.title,
+            company=job.company or company, location=job.location,
+            description=job.description or "", url=str(job.url),
+            posted_date=job.posted_at.isoformat() if job.posted_at else None,
         )
     raise ValueError(f"Unknown ATS platform: {platform}")

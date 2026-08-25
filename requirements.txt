@@ -5,6 +5,7 @@ langgraph
 langgraph-checkpoint-sqlite
 requests
 python-jobspy
+ats-scrapers[scrapers]
 imap_tools
 discord.py
 apscheduler

@@ -170,7 +170,7 @@ stays off, nothing breaks.
 | French source, any contract type (filterable) | No | France Travail "Offres d'emploi v2" — **France only**, free |
 | General-purpose, multi-country source | No | Adzuna — free up to 2500 calls/month |
 | Spontaneous-application leads (France) | No | La Bonne Boite — **needs manual approval from France Travail**, not active on credentials alone |
-| Tech-company career pages (any country) | No | Greenhouse/Ashby/Lever — free, but needs `ATS_WATCHLIST` (or chat) to name companies, no keyword search |
+| Tech-company career pages (any country) | No | Greenhouse/Ashby/Lever/SmartRecruiters/Workable/Rippling/Workday/SuccessFactors — free, but needs `ATS_WATCHLIST` (or chat) to name companies, no keyword search |
 | Funding-news leads for the ATS watchlist | No | Nothing extra -- free RSS, proposes companies, never adds one on its own |
 | Mail monitoring (reading + draft replies) | No | One or more Gmail accounts |
 | Web search for sharper letters/contacts | No | Tavily (free up to 1000/month) or self-hosted SearXNG (docker, free) |
@@ -409,6 +409,22 @@ retried forever). `/strategy` (Discord) or the terminal UI's Reports tab
 shows what's actually in use and why. La Bonne Alternance and La Bonne Boite
 are unaffected -- they search by ROME code, not free text (see below).
 
+Every newly-found posting also passes a cheap, free relevance pre-filter
+before it's ever saved (never re-applied to what's already in the
+database): does its title, or failing that its description, contain a
+significant word from your target roles. **Optional semantic fallback**: a
+posting that fails even that (different wording for the same domain, e.g.
+an English "AI Engineer" title against a profile that only ever says "IA")
+gets one more chance via sentence-embedding similarity instead of being
+dropped outright. Off by default -- set `RELEVANCE_SEMANTIC_FALLBACK=1` in
+`.env` and `pip install sentence-transformers` (not installed by default,
+pulls in `torch`, the heaviest dependency this project would otherwise
+carry). `pip` may print a dependency-conflict warning about `numpy`/`regex`
+versions against `python-jobspy` when you do -- harmless in practice
+(verified live: JobSpy scraping still works correctly with the newer
+versions `sentence-transformers` pulls in), not a sign anything actually
+broke.
+
 ## French job sources (optional)
 
 JobSpy alone already works with nothing else configured. These three sources
@@ -446,13 +462,17 @@ blocking anything else (the bot handles that on its own, no error surfaces).
 ## ATS watchlist (optional)
 
 Not France-specific, and fundamentally different from every other source
-above: no keyword search. Greenhouse, Ashby, and Lever (the three ATS
-platforms behind a lot of tech-company career pages) each expose a free,
-unauthenticated JSON feed of a single company's current openings, keyed by
-that company's own "board slug" -- there's no "search every company on
-Greenhouse" endpoint, only "this one company's board." So this source works
-off an explicit list of companies (`core/ats_watchlist.py`) instead of your
-profile's target roles/locations.
+above: no keyword search. Eight ATS platforms behind a lot of tech-company
+career pages -- Greenhouse, Ashby, Lever, SmartRecruiters, Workable,
+Rippling, Workday, and SuccessFactors -- each expose a free, unauthenticated
+feed of a single company's current openings, keyed by that company's own
+"board slug." There's no "search every company on Greenhouse" endpoint, only
+"this one company's board." So this source works off an explicit list of
+companies (`core/ats_watchlist.py`) instead of your profile's target
+roles/locations. Greenhouse/Ashby/Lever are parsed directly
+(`tools/sources_ats.py`); the other five go through
+[`ats-scrapers`](https://github.com/kalil0321/ats-scrapers), an open-source
+toolkit that already normalizes each platform's raw response.
 
 Two ways onto that list:
 
@@ -466,13 +486,22 @@ files, three chat tools reachable through `/ask`: `surveiller_entreprise`
 ("watch Anthropic"), `retirer_entreprise_suivie`, and
 `lister_entreprises_suivies`.
 
-Resolution is best-effort: a company name gets tried against all three
-platforms under a few common spelling conventions (lowercase, hyphenated, no
-spaces). If none of those match, that's reported plainly rather than
-guessed at -- pass the company's exact slug from its careers page URL
-instead if you already know it uses one of these three
+Resolution is best-effort: a company name gets tried against six of the
+eight platforms (everything except Workday and SuccessFactors, see below)
+under a few common spelling conventions (lowercase, hyphenated, no spaces).
+If none of those match, that's reported plainly rather than guessed at --
+pass the company's exact slug from its careers page URL instead if you
+already know it uses one of the six
 (`boards.greenhouse.io/THIS-PART`, `jobs.ashbyhq.com/THIS-PART`,
-`jobs.lever.co/THIS-PART`).
+`jobs.lever.co/THIS-PART`, `careers.smartrecruiters.com/THIS-PART`,
+`apply.workable.com/THIS-PART`, `api.rippling.com/.../THIS-PART`) via
+`surveiller_entreprise`'s optional `platform`/`slug` arguments.
+
+**Workday and SuccessFactors can't auto-resolve at all** -- they identify a
+company by its full careers URL/hostname (e.g.
+`https://acme.wd5.myworkdayjobs.com/careers`), not a short guessable name,
+so `platform`/`slug` must be given explicitly for these two:
+`surveiller_entreprise("Acme", platform="workday", slug="https://acme.wd5.myworkdayjobs.com/careers")`.
 
 `surveiller_entreprise` does one more thing on success: it also creates a
 spontaneous-application lead for that company (same idea as La Bonne
@@ -491,12 +520,13 @@ gets the same automatic contact lookup at that point if it doesn't have one
 yet -- there's no listing to reply to for this offer type, so a contact is
 the only concrete next step, and it shows up in that run's notification.
 
-Worth knowing before adding a long list of companies: these three platforms
-skew heavily toward tech/software/startup hiring -- genuinely useful if
-that's the target role, close to empty otherwise. Postings found this way
-go through the exact same dedup/scoring/letter pipeline as every other
-source, tagged `ats_greenhouse`/`ats_ashby`/`ats_lever` in `/sources` and
-`/log`.
+Worth knowing before adding a long list of companies: these platforms skew
+heavily toward tech/software/startup hiring -- genuinely useful if that's
+the target role, close to empty otherwise. Postings found this way go
+through the exact same dedup/scoring/letter pipeline as every other source,
+tagged `ats_greenhouse`/`ats_ashby`/`ats_lever`/`ats_smartrecruiters`/
+`ats_workable`/`ats_rippling`/`ats_workday`/`ats_successfactors` in
+`/sources` and `/log`.
 
 ## Funding-news leads (optional)
 
@@ -504,9 +534,10 @@ Grows the ATS watchlist above on its own, without ever adding to it
 silently: every `FUNDING_CHECK_INTERVAL_DAYS` (2 by default), hobot reads
 recent headlines from Maddyness and Frenchweb (free RSS, no key), and for
 anything that reads like a specific company just raised money, checks
-whether that company has a Greenhouse/Ashby/Lever board -- a company that
-just closed a round is a reasonable bet to be hiring soon, even before a
-posting shows up.
+whether that company has a board on one of the six auto-resolvable ATS
+platforms (see [ATS watchlist](#ats-watchlist-optional) above) -- a company
+that just closed a round is a reasonable bet to be hiring soon, even before
+a posting shows up.
 
 A match is **proposed**, never added automatically: a notification (Discord
 and desktop, same as everything else proactive in this project) lists what
@@ -518,9 +549,9 @@ hand. Nothing here writes to the watchlist on its own.
 instead of waiting for its schedule -- slow (an LLM call per candidate
 headline), and an empty result most of the time is normal, not a failure:
 of 18 real headlines checked while building this, 6 turned out to be a
-specific company with a real board on one of the three platforms, the rest
-were either opinion pieces/retrospectives (no specific company) or a
-company not on Greenhouse/Ashby/Lever.
+specific company with a real board on one of these platforms, the rest were
+either opinion pieces/retrospectives (no specific company) or a company on
+none of them.
 
 ## CV tailoring (optional)
 
@@ -909,7 +940,7 @@ tools/
   sources_jobspy.py   — discovery connector (no key required)
   sources_lba.py, sources_adzuna.py, sources_francetravail.py,
   sources_labonneboite.py — French sources (optional, see table above)
-  sources_ats.py      — Greenhouse/Ashby/Lever connector, per-company (optional, see table above)
+  sources_ats.py      — Greenhouse/Ashby/Lever/SmartRecruiters/Workable/Rippling/Workday/SuccessFactors connector, per-company (optional, see table above)
   sources_funding_news.py — Maddyness/Frenchweb RSS, feeds the ATS watchlist (optional)
   funding_check.py    — turns a funding headline into a watchlist proposal (optional)
   sources_pappers.py, sources_hunter.py, sources_snov.py — contacts (optional)

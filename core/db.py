@@ -214,13 +214,18 @@ def get_connection():
     conn.execute("PRAGMA foreign_keys = ON")
     # WAL lets a reader (e.g. a second process, once one exists) proceed while
     # a writer is mid-transaction instead of blocking on it; busy_timeout makes
-    # a genuinely contested write retry for up to 10s instead of raising
-    # "database is locked" on Python's stdlib 5s default almost immediately.
-    # Both are cheap to reissue on every connection: WAL is a persistent file
-    # property (re-setting it is a no-op check, not real work), busy_timeout is
+    # a genuinely contested write retry for up to 20s instead of raising
+    # "database is locked" on Python's stdlib 5s default almost immediately --
+    # this IS the "wait instead of erroring" behavior a concurrent write is
+    # supposed to get for free; it only fails to look that way if some other
+    # writer holds its transaction open longer than this (see
+    # graphs/discovery_graph.py::draft_letters_node's own note on the one
+    # write path that used to do exactly that). Both PRAGMAs are cheap to
+    # reissue on every connection: WAL is a persistent file property
+    # (re-setting it is a no-op check, not real work), busy_timeout is
     # per-connection so it does need to be set here every time.
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA busy_timeout=20000")
     try:
         yield conn
         conn.commit()
