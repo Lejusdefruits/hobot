@@ -27,6 +27,7 @@ import os
 import re
 import sqlite3
 import sys
+import unicodedata
 import uuid
 from pathlib import Path
 
@@ -1294,10 +1295,15 @@ _CORE_TOOL_NAMES = {"profil_candidat", "rechercher_offres", "statut_veille"}
 # "cv" as its own alternative, not just widening the {3,} minimum: a lower
 # general floor would pull in a lot of short French function words (de, le,
 # la, un...) as noise, but "cv" specifically is too domain-important to drop
-# for being two characters. Apostrophes stripped before matching, not
-# treated as a word boundary -- French contractions (aujourd'hui, l'offre,
-# s'il) would otherwise split into two fragments that match nothing.
-_WORD_RE = re.compile(r"[a-zà-ÿ]{3,}|cv")
+# for being two characters. Plain [a-z], not an accented range: accents are
+# stripped (see _strip_accents below) before this ever runs, matching
+# _SYNONYM_GROUPS' own unaccented spelling and making the match robust to a
+# real user dropping accents while typing quickly, which happens constantly.
+_WORD_RE = re.compile(r"[a-z]{3,}|cv")
+
+
+def _strip_accents(text: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
 
 # Deliberately crude, not a real stemmer: strips a handful of common French
 # verb/adjective endings so paraphrases of the same tool ("annule" vs.
@@ -1317,9 +1323,38 @@ def _stem(word: str) -> str:
     return word
 
 
+# Tool NAMES are French (rechercher_offres, mes_candidatures...) but tool
+# DESCRIPTIONS -- most of what there actually is to match against -- are
+# English. Confirmed directly by testing the exact same ~44 queries in both
+# languages: English queries scored meaningfully higher precisely on the
+# concepts phrased differently in each language (a French query never
+# reaches a description-only English word like "skills" or "poorly-scored"
+# at all). This closes the specific gaps that surfaced in testing --
+# genuinely different roots _stem's suffix-stripping can't bridge (a
+# conjugation variant and its infinitive share a root; "compétences" and
+# "skills" don't share anything) -- not a general translation layer. Each
+# group is stemmed the same way everything else is before being reduced to
+# one canonical token, so either language's word lands on the same key.
+_SYNONYM_GROUPS = [
+    {"competence", "competences", "skill", "skills"},
+    {"lettre", "lettres", "letter", "letters"},
+    {"brouillon", "brouillons", "draft", "drafts"},
+    {"envoi", "envoyer", "envoie", "envois", "send", "sending", "sent"},
+    {"suivre", "suivie", "suivi", "watch", "watching", "watched"},
+]
+_CANONICAL: dict[str, str] = {}
+for _group in _SYNONYM_GROUPS:
+    _stemmed_group = {_stem(w) for w in _group}
+    _canon = min(_stemmed_group)
+    for _sw in _stemmed_group:
+        _CANONICAL[_sw] = _canon
+
+
 def _tokenize(text: str) -> set[str]:
     text = text.replace("'", "").replace("’", "")
-    return {_stem(w) for w in _WORD_RE.findall(text.lower())}
+    text = _strip_accents(text)
+    stemmed = {_stem(w) for w in _WORD_RE.findall(text.lower())}
+    return {_CANONICAL.get(w, w) for w in stemmed}
 
 
 _TOOL_KEYWORDS = {
