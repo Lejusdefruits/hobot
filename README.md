@@ -279,6 +279,15 @@ ANTHROPIC_MODEL=claude-sonnet-5
 `LLM_PROVIDER=ollama` (the default) ignores both blocks entirely -- there's
 no need to remove them if you switch back later.
 
+Chat/`/ask` conversation history sent to the model each turn
+(`CHAT_AGENT_MAX_CONTEXT_TOKENS`) defaults to 1500 tokens on any cloud
+provider, versus 6000 on Ollama: a cloud plan's real rate/context budget can
+be much smaller than what Ollama comfortably provisions for itself locally
+-- Groq's free tier, for instance, is 8000 tokens per *minute* for
+`openai/gpt-oss-120b`, less than this project's system prompt plus ~37 tool
+schemas alone need before a single token of history. Raise it in `.env` if
+your plan has real headroom to spare.
+
 ### 2. Clone the repo and install dependencies
 
 ```bash
@@ -344,10 +353,13 @@ A few equivalent options, pick one:
 
 - **With a CV**, straight from Discord: `/profile` and attach a PDF or `.docx`
   file. It reads it (PDF or Word, real text or a flattened/scanned page,
-  either way), saves the profile, and follows up with 2-4 questions in the
-  same conversation if something looks thin or missing (no target city
-  detected, a vague target role, very few skills) -- answer normally with
-  `/ask`. This CV is also what per-offer tailoring (see below) edits.
+  either way -- a flattened/scanned page needs a vision-capable LLM, and
+  triggers a warning that most real ATS systems can't read that format
+  either, so it's worth re-exporting as real text if you can), saves the
+  profile, and follows up with 2-4 questions in the same conversation if
+  something looks thin or missing (no target city detected, a vague target
+  role, very few skills) -- answer normally with `/ask`. This CV is also
+  what per-offer tailoring (see below) edits.
 - **No CV**, straight from Discord: `/ask "I'm a Python developer
   looking for something in Lyon"`. The agent turns that into a structured
   profile (skills, target roles, target locations) and saves it. Adjust it
@@ -662,6 +674,9 @@ Seven tabs (`F1`-`F7` to jump between them, or click/Tab through them):
 - **Chat** -- the same agent `/ask` talks to, full conversation history,
   proposed email sends shown with their own confirm button, any link in a
   reply clickable, scrollable with the keyboard (not just a mouse wheel).
+  Ctrl+V pastes from the real system clipboard (not just whatever was last
+  copied from inside the terminal UI itself, which is all most terminal
+  apps' Ctrl+V does by default) -- same for Profile's four edit fields.
 - **Reports** -- sources (every discovery source, always, not just ones that
   already ran -- a **Configured** column shows whether it actually has what
   it needs, e.g. an API key, separately from whether it's found anything
@@ -869,6 +884,7 @@ core/
   hardware.py         — RAM/CPU detection: install-time model-fit check + runtime load gate for scoring
   autostart.py        — configures the systemd/launchd/Task Scheduler autostart from "Running it continuously"
   browser.py           — opens a URL in the default browser (best-effort, used by the wizard and the terminal UI)
+  clipboard.py         — reads the real OS clipboard (best-effort, backs the terminal UI's Ctrl+V paste)
 tools/
   sources_jobspy.py   — discovery connector (no key required)
   sources_lba.py, sources_adzuna.py, sources_francetravail.py,
@@ -891,6 +907,7 @@ tools/
 tui/                  — the terminal UI (see "Terminal UI" above)
   app.py              — Textual App: tabs, theme, cross-pane wiring
   modals.py            — confirmation dialogs, text prompts, the offer detail screen
+  widgets.py            — shared widget customizations (PasteableInput: real Ctrl+V paste)
   panes/               — one module per tab, each reusing core/queries.py, tools/common.py, etc.
   app.tcss             — stylesheet
 ```
@@ -905,8 +922,8 @@ either interface.
 
 JobSpy does real scraping, not an API call: broad, generic target roles
 ("backend developer" rather than a very specific title) tend to give better
-results. `modifier_profil`/`definir_profil` (via `/ask`) let you adjust
-that at any point.
+results. `/ask "add Rust to my skills"` (or similar) lets you adjust that
+at any point.
 
 ## Design and safety
 
