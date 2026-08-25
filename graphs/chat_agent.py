@@ -1205,20 +1205,47 @@ Non-negotiable rules:
 #
 # The 6000 default assumes Ollama, where OLLAMA_NUM_CTX (20000 by default,
 # see core/llm_provider.py's own comment) is set generously enough to hold
-# system prompt + ~37 tool schemas (>6000 tokens alone, measured on a real
-# call) + this trimmed history + thinking + the answer, all at effectively
-# no cost since it's local. A cloud provider has no equivalent knob -- the
-# context/rate budget is whatever the plan actually allows, and a free tier
-# can be far smaller than what Ollama comfortably provisions: Groq's free
-# tier is 8000 tokens PER MINUTE for openai/gpt-oss-120b specifically
-# (confirmed against Groq's own rate-limit docs) -- less than system prompt
-# + tools alone need, before a single token of history. Left at 6000 for a
-# cloud provider, every request after the first one or two fails with a
-# rate-limit/context error that reads to a user as "hobot doesn't respect
-# my plan's limit" (reported directly). Defaulting much lower for any
-# non-Ollama provider leaves more of that tight budget for the fixed
-# system+tools overhead; still fully overridable for a more generous paid
-# plan via CHAT_AGENT_MAX_CONTEXT_TOKENS.
+# system prompt + ~41 tool schemas + this trimmed history + thinking + the
+# answer, all at effectively no cost since it's local. A cloud provider has
+# no equivalent knob -- the context/rate budget is whatever the plan
+# actually allows.
+#
+# 1500 wasn't low enough on Groq's free tier and was lowered from there with
+# real numbers, not guessed: measured directly against this file's own
+# SYSTEM_PROMPT/TOOLS (~444 tokens, ~41 tools), and the actual "Requested"
+# figure Groq's own 429 response reports back. The ~41 tool schemas alone
+# -- bound once per call, completely unrelated to conversation history --
+# account for roughly 7000-7500 of Groq's free tier's 8000 TPM cap for
+# openai/gpt-oss-120b, leaving only a few hundred tokens of real headroom
+# total, not the few thousand 1500 assumed.
+#
+# 400 is deliberately BELOW SYSTEM_PROMPT's own ~444-token size, not just a
+# smaller number: trim_messages (include_system=True) always keeps the
+# system message regardless of the budget given to it, but confirmed
+# directly that a budget merely *near* the system message's own size (500,
+# tried first) can still leave a little headroom -- enough for one or two
+# short recent messages to slip in on top, an unpredictable few dozen tokens
+# depending on how that specific conversation happens to be shaped. A budget
+# strictly below the system message's floor leaves zero headroom for
+# anything else, confirmed directly across several budgets -- the same,
+# fully predictable "just the system message" result every time, matching
+# exactly what a fresh, no-history first message already looks like
+# (confirmed working, since that's the request that succeeds before this
+# error is ever hit). The one variable this still can't bound is the new
+# user message's own length, which isn't part of what's being trimmed here.
+#
+# The real cost: on a tight cloud plan, the chat agent effectively has no
+# memory of earlier turns in the same conversation -- every message is
+# answered close to fresh. This is a genuine capability loss, not just
+# slower/worse, but it beats a chat feature that looks like it remembers
+# and then randomly errors out on whichever turn finally tips the budget
+# over. hobot's actual state (offers, applications, profile) lives in the
+# database either way, not in conversation memory, so most single, self-
+# contained requests ("find me offers in Lyon", "what's my quota usage")
+# still work exactly as well as ever -- it's specifically back-and-forth
+# follow-ups referencing something said earlier in the same conversation
+# that stop working. Still fully overridable via
+# CHAT_AGENT_MAX_CONTEXT_TOKENS for a paid plan with real headroom to spare.
 # .strip() + truthiness check, not a plain os.environ.get(key, default):
 # .env.example ships this line present but empty (CHAT_AGENT_MAX_CONTEXT_TOKENS=)
 # specifically so the provider-aware default below applies out of the box --
@@ -1229,7 +1256,7 @@ _context_tokens_raw = os.environ.get("CHAT_AGENT_MAX_CONTEXT_TOKENS", "").strip(
 if _context_tokens_raw:
     MAX_CONTEXT_TOKENS = int(_context_tokens_raw)
 else:
-    MAX_CONTEXT_TOKENS = 6000 if LLM_PROVIDER == "ollama" else 1500
+    MAX_CONTEXT_TOKENS = 6000 if LLM_PROVIDER == "ollama" else 400
 
 
 def _trim_history(state: dict) -> dict:

@@ -280,13 +280,20 @@ ANTHROPIC_MODEL=claude-sonnet-5
 no need to remove them if you switch back later.
 
 Chat/`/ask` conversation history sent to the model each turn
-(`CHAT_AGENT_MAX_CONTEXT_TOKENS`) defaults to 1500 tokens on any cloud
-provider, versus 6000 on Ollama: a cloud plan's real rate/context budget can
-be much smaller than what Ollama comfortably provisions for itself locally
--- Groq's free tier, for instance, is 8000 tokens per *minute* for
-`openai/gpt-oss-120b`, less than this project's system prompt plus ~37 tool
-schemas alone need before a single token of history. Raise it in `.env` if
-your plan has real headroom to spare.
+(`CHAT_AGENT_MAX_CONTEXT_TOKENS`) defaults to 400 tokens on any cloud
+provider, versus 6000 on Ollama -- measured directly against a real 429 from
+Groq's free tier: this project's ~41 tool schemas alone (bound on every
+call, unrelated to conversation history) already use roughly 7000-7500 of
+its 8000-tokens-per-*minute* cap for `openai/gpt-oss-120b`, leaving only a
+few hundred tokens of real headroom, not the few thousand a higher default
+would assume. In practice this means close to no memory of earlier turns in
+the same conversation on a tight cloud plan -- a real capability loss, but
+one that beats a chat feature that looks like it remembers and then
+randomly errors out a turn or two in. hobot's actual state (offers,
+applications, profile) lives in the database regardless, so a single
+self-contained request still works the same either way; it's specifically a
+follow-up referencing something said earlier that stops working. Raise it
+in `.env` if your plan has real headroom to spare.
 
 ### 2. Clone the repo and install dependencies
 
