@@ -38,7 +38,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.prebuilt import create_react_agent
 
 from core.db import get_connection, get_user_profile
-from core.llm_provider import get_chat_model
+from core.llm_provider import LLM_PROVIDER, get_chat_model
 from tools import common
 from tools.email_tools import GMAIL_DAILY_SEND_CAP
 from tools.ghost_job import check_ghost_job
@@ -1201,8 +1201,35 @@ Non-negotiable rules:
 # Bounded context: a long conversation (lots of tool round-trips) must never
 # drift the model by saturating its context window. The full state stays in
 # the checkpointer (SqliteSaver); only what's actually sent to the LLM each
-# turn gets trimmed to the ~6000 most recent tokens.
-MAX_CONTEXT_TOKENS = int(os.environ.get("CHAT_AGENT_MAX_CONTEXT_TOKENS", "6000"))
+# turn gets trimmed to the most recent N tokens.
+#
+# The 6000 default assumes Ollama, where OLLAMA_NUM_CTX (20000 by default,
+# see core/llm_provider.py's own comment) is set generously enough to hold
+# system prompt + ~37 tool schemas (>6000 tokens alone, measured on a real
+# call) + this trimmed history + thinking + the answer, all at effectively
+# no cost since it's local. A cloud provider has no equivalent knob -- the
+# context/rate budget is whatever the plan actually allows, and a free tier
+# can be far smaller than what Ollama comfortably provisions: Groq's free
+# tier is 8000 tokens PER MINUTE for openai/gpt-oss-120b specifically
+# (confirmed against Groq's own rate-limit docs) -- less than system prompt
+# + tools alone need, before a single token of history. Left at 6000 for a
+# cloud provider, every request after the first one or two fails with a
+# rate-limit/context error that reads to a user as "hobot doesn't respect
+# my plan's limit" (reported directly). Defaulting much lower for any
+# non-Ollama provider leaves more of that tight budget for the fixed
+# system+tools overhead; still fully overridable for a more generous paid
+# plan via CHAT_AGENT_MAX_CONTEXT_TOKENS.
+# .strip() + truthiness check, not a plain os.environ.get(key, default):
+# .env.example ships this line present but empty (CHAT_AGENT_MAX_CONTEXT_TOKENS=)
+# specifically so the provider-aware default below applies out of the box --
+# os.environ.get(key, default) only falls back on a genuinely absent key, an
+# empty string is still "present" and would make int("") raise instead (the
+# same empty-vs-absent trap core/profile.py's CV_PATH handling documents).
+_context_tokens_raw = os.environ.get("CHAT_AGENT_MAX_CONTEXT_TOKENS", "").strip()
+if _context_tokens_raw:
+    MAX_CONTEXT_TOKENS = int(_context_tokens_raw)
+else:
+    MAX_CONTEXT_TOKENS = 6000 if LLM_PROVIDER == "ollama" else 1500
 
 
 def _trim_history(state: dict) -> dict:
@@ -1303,6 +1330,26 @@ def ask(message: str, thread_id: str) -> str:
         )
         return result["messages"][-1].content
     except Exception as e:
+        error_text = str(e)
+        # String-matched, not caught by exception type: openai/anthropic are
+        # both optional, lazily-imported dependencies (see
+        # core/llm_provider.py's own docstring) -- importing either just to
+        # catch its specific rate-limit/context-length exception class would
+        # make it a hard dependency for everyone, including Ollama-only
+        # users who never hit this path at all.
+        if LLM_PROVIDER != "ollama" and any(
+            marker in error_text.lower()
+            for marker in ("rate_limit", "rate limit", "context_length", "context length",
+                            "tokens per minute", "maximum context")
+        ):
+            return (
+                "Error while processing the request: your cloud LLM plan's rate or context "
+                "limit was hit. This project's system prompt plus its ~37 tools already use "
+                "several thousand tokens on every request, before any conversation history -- "
+                "a free-tier plan's budget can be smaller than that (Groq's free tier is "
+                "notably tight for larger models). Lowering CHAT_AGENT_MAX_CONTEXT_TOKENS in "
+                f".env may help; the exact error was: {e}"
+            )
         return f"Error while processing the request: {e}"
 
 
