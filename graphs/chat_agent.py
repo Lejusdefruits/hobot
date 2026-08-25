@@ -27,14 +27,12 @@ import os
 import re
 import sqlite3
 import sys
-import unicodedata
 import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from langchain_core.messages import trim_messages
-from langchain_core.runnables import Runnable
 from langchain_core.tools import tool
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.prebuilt import create_react_agent
@@ -1254,179 +1252,11 @@ Non-negotiable rules:
 # os.environ.get(key, default) only falls back on a genuinely absent key, an
 # empty string is still "present" and would make int("") raise instead (the
 # same empty-vs-absent trap core/profile.py's CV_PATH handling documents).
-# Tool selection: cloud providers only (TOOL_SELECTION_ENABLED is forced off
-# for Ollama below, regardless of this flag) -- Ollama already has all the
-# headroom it needs via OLLAMA_NUM_CTX, so narrowing its tool list would
-# only add correctness risk (a needed tool not making the cut) for zero
-# benefit. The ~41 tool schemas bound on every call are the dominant fixed
-# cost on a tight cloud budget (see MAX_CONTEXT_TOKENS below) -- binding
-# only the tools that look relevant to the CURRENT message, instead of all
-# 41 every time, is what actually frees up real room for conversation
-# history again on a plan like Groq's free tier.
-#
-# Deliberately lightweight, no extra LLM/embedding call (that would add
-# latency and eat into the same tight quota this is trying to protect):
-# plain keyword overlap between the latest user message and each tool's
-# name (French, like "rechercher_offres" -- matches French questions
-# directly) plus its description (English). No stopword list or stemming --
-# a few incidental short-word matches mostly tie across every tool equally,
-# they don't meaningfully bias the ranking.
-#
-# The real risk, and it's real: if the keyword overlap misses whatever tool
-# a multi-step request actually needs partway through (the model finds out
-# it needs rechercher_entreprise only after reading an offer's details, say),
-# that tool simply isn't available to call -- a harder failure than the
-# trimmed-history tradeoff above, since the model can't always tell the user
-# what capability it's missing. CHAT_AGENT_TOOL_SELECTION_TOP_K and
-# CHAT_AGENT_TOOL_SELECTION exist specifically to tune or disable this after
-# testing it against what real conversations actually need.
-TOOL_SELECTION_ENABLED = (
-    LLM_PROVIDER != "ollama" and os.environ.get("CHAT_AGENT_TOOL_SELECTION", "1") == "1"
-)
-TOOL_SELECTION_TOP_K = int(os.environ.get("CHAT_AGENT_TOOL_SELECTION_TOP_K", "12"))
-
-# Always bound regardless of keyword match: profil_candidat because the
-# system prompt's own first rule depends on checking it before most other
-# actions, rechercher_offres as the single most likely intent behind a
-# short/ambiguous message, statut_veille since "is anything happening" is a
-# common orientation question with no obvious keyword overlap of its own.
-_CORE_TOOL_NAMES = {"profil_candidat", "rechercher_offres", "statut_veille"}
-
-# "cv" as its own alternative, not just widening the {3,} minimum: a lower
-# general floor would pull in a lot of short French function words (de, le,
-# la, un...) as noise, but "cv" specifically is too domain-important to drop
-# for being two characters. Plain [a-z], not an accented range: accents are
-# stripped (see _strip_accents below) before this ever runs, matching
-# _SYNONYM_GROUPS' own unaccented spelling and making the match robust to a
-# real user dropping accents while typing quickly, which happens constantly.
-_WORD_RE = re.compile(r"[a-z]{3,}|cv")
-
-
-def _strip_accents(text: str) -> str:
-    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
-
-# Deliberately crude, not a real stemmer: strips a handful of common French
-# verb/adjective endings so paraphrases of the same tool ("annule" vs.
-# "annuler", "postule" vs. "postulée") still overlap. Longest suffix first
-# so "ées" strips as one unit instead of leaving a trailing "e". Only tried
-# on words with enough left over (>=3 chars of real stem) to stay meaningful
-# -- short words are returned unstemmed rather than mangled.
-_FRENCH_SUFFIXES = ("ées", "ée", "és", "er", "es", "e", "é")
-
-
-def _stem(word: str) -> str:
-    if len(word) < 5:
-        return word
-    for suffix in _FRENCH_SUFFIXES:
-        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
-            return word[: -len(suffix)]
-    return word
-
-
-# Tool NAMES are French (rechercher_offres, mes_candidatures...) but tool
-# DESCRIPTIONS -- most of what there actually is to match against -- are
-# English. Confirmed directly by testing the exact same ~44 queries in both
-# languages: English queries scored meaningfully higher precisely on the
-# concepts phrased differently in each language (a French query never
-# reaches a description-only English word like "skills" or "poorly-scored"
-# at all). This closes the specific gaps that surfaced in testing --
-# genuinely different roots _stem's suffix-stripping can't bridge (a
-# conjugation variant and its infinitive share a root; "compétences" and
-# "skills" don't share anything) -- not a general translation layer. Each
-# group is stemmed the same way everything else is before being reduced to
-# one canonical token, so either language's word lands on the same key.
-_SYNONYM_GROUPS = [
-    {"competence", "competences", "skill", "skills"},
-    {"lettre", "lettres", "letter", "letters"},
-    {"brouillon", "brouillons", "draft", "drafts"},
-    {"envoi", "envoyer", "envoie", "envois", "send", "sending", "sent"},
-    {"suivre", "suivie", "suivi", "watch", "watching", "watched"},
-]
-_CANONICAL: dict[str, str] = {}
-for _group in _SYNONYM_GROUPS:
-    _stemmed_group = {_stem(w) for w in _group}
-    _canon = min(_stemmed_group)
-    for _sw in _stemmed_group:
-        _CANONICAL[_sw] = _canon
-
-
-def _tokenize(text: str) -> set[str]:
-    text = text.replace("'", "").replace("’", "")
-    text = _strip_accents(text)
-    stemmed = {_stem(w) for w in _WORD_RE.findall(text.lower())}
-    return {_CANONICAL.get(w, w) for w in stemmed}
-
-
-_TOOL_KEYWORDS = {
-    t.name: _tokenize(t.name.replace("_", " ") + " " + (t.description or ""))
-    for t in TOOLS
-}
-
-# Inverse-document-frequency-style weighting, computed once: a keyword that
-# shows up in most tools' name+description ("offre", "mail" -- structurally
-# common across a job-search agent's own vocabulary) barely distinguishes
-# between them and shouldn't score like a keyword that's genuinely rare and
-# therefore specific (like a tool's own distinctive name fragment). Without
-# this, common words alone were enough to tie several unrelated tools with
-# the actually-relevant one, and ties then fall back to TOOLS' declaration
-# order -- which silently, systematically disadvantages whatever's declared
-# later in the list for no reason related to the query at all.
-_TOKEN_TOOL_COUNTS: dict[str, int] = {}
-for _keywords in _TOOL_KEYWORDS.values():
-    for _word in _keywords:
-        _TOKEN_TOOL_COUNTS[_word] = _TOKEN_TOOL_COUNTS.get(_word, 0) + 1
-
-
-def _tool_score(query_words: set[str], tool_name: str) -> float:
-    return sum(1.0 / _TOKEN_TOOL_COUNTS[w] for w in query_words & _TOOL_KEYWORDS[tool_name])
-
-
-def _select_relevant_tools(messages: list) -> list:
-    query = ""
-    for m in reversed(messages):
-        if getattr(m, "type", None) == "human" and isinstance(m.content, str):
-            query = m.content
-            break
-    query_words = _tokenize(query)
-
-    scored = sorted(TOOLS, key=lambda t: _tool_score(query_words, t.name), reverse=True)
-
-    selected = [t for t in TOOLS if t.name in _CORE_TOOL_NAMES]
-    selected_names = {t.name for t in selected}
-    for t in scored:
-        if len(selected) >= TOOL_SELECTION_TOP_K:
-            break
-        if t.name not in selected_names:
-            selected.append(t)
-            selected_names.add(t.name)
-    return selected
-
-
-# .strip() + truthiness check, not a plain os.environ.get(key, default):
-# .env.example ships this line present but empty (CHAT_AGENT_MAX_CONTEXT_TOKENS=)
-# specifically so the provider-aware default below applies out of the box --
-# os.environ.get(key, default) only falls back on a genuinely absent key, an
-# empty string is still "present" and would make int("") raise instead (the
-# same empty-vs-absent trap core/profile.py's CV_PATH handling documents).
-#
-# The cloud default is conditional on TOOL_SELECTION_ENABLED, not a single
-# fixed number: ~12 tools (TOOL_SELECTION_TOP_K's default) cost roughly a
-# third of what all 41 do -- call it ~2500 tokens generously, versus the
-# ~7000-7500 the full set uses on its own -- freeing real room for
-# conversation history again. Without tool selection active (disabled via
-# CHAT_AGENT_TOOL_SELECTION=0, e.g. while comparing behavior), the full
-# 41-tool cost is back, so the budget falls back to 400, the value measured
-# safe against Groq's free tier for the full tool list (see the long
-# comment above this block).
 _context_tokens_raw = os.environ.get("CHAT_AGENT_MAX_CONTEXT_TOKENS", "").strip()
 if _context_tokens_raw:
     MAX_CONTEXT_TOKENS = int(_context_tokens_raw)
-elif LLM_PROVIDER == "ollama":
-    MAX_CONTEXT_TOKENS = 6000
-elif TOOL_SELECTION_ENABLED:
-    MAX_CONTEXT_TOKENS = 2500
 else:
-    MAX_CONTEXT_TOKENS = 400
+    MAX_CONTEXT_TOKENS = 6000 if LLM_PROVIDER == "ollama" else 400
 
 
 def _trim_history(state: dict) -> dict:
@@ -1435,20 +1265,6 @@ def _trim_history(state: dict) -> dict:
         token_counter="approximate", include_system=True, allow_partial=False,
     )
     return {"llm_input_messages": trimmed}
-
-
-def _select_model(state: dict, runtime) -> Runnable:
-    """Dynamic model resolution (LangGraph's own create_react_agent hook,
-    called with the FULL untrimmed state, independent of _trim_history's own
-    pre_model_hook) -- the only place tool selection actually happens.
-    Selected tools are always a subset of TOOLS (LangGraph's own requirement
-    for this pattern): the ToolNode below still knows how to execute any of
-    the full 41 regardless of which subset got bound for a given call, only
-    what's offered to the model for generation on THIS turn narrows."""
-    model = get_chat_model(temperature=0.2)
-    if not TOOL_SELECTION_ENABLED:
-        return model.bind_tools(TOOLS)
-    return model.bind_tools(_select_relevant_tools(state["messages"]))
 
 
 CHECKPOINT_DB_PATH = Path(__file__).resolve().parent.parent / os.environ.get(
@@ -1469,7 +1285,7 @@ _checkpoint_conn.execute("PRAGMA busy_timeout=10000")
 _checkpointer = SqliteSaver(_checkpoint_conn)
 _checkpointer.setup()  # idempotent; called explicitly here so a broken DB file fails fast at import, not on the first /ask
 _agent = create_react_agent(
-    model=_select_model,
+    model=get_chat_model(temperature=0.2),
     tools=TOOLS,
     prompt=SYSTEM_PROMPT,
     checkpointer=_checkpointer,
