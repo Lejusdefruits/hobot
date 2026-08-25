@@ -1291,17 +1291,59 @@ TOOL_SELECTION_TOP_K = int(os.environ.get("CHAT_AGENT_TOOL_SELECTION_TOP_K", "12
 # common orientation question with no obvious keyword overlap of its own.
 _CORE_TOOL_NAMES = {"profil_candidat", "rechercher_offres", "statut_veille"}
 
-_WORD_RE = re.compile(r"[a-zà-ÿ]{3,}")
+# "cv" as its own alternative, not just widening the {3,} minimum: a lower
+# general floor would pull in a lot of short French function words (de, le,
+# la, un...) as noise, but "cv" specifically is too domain-important to drop
+# for being two characters. Apostrophes stripped before matching, not
+# treated as a word boundary -- French contractions (aujourd'hui, l'offre,
+# s'il) would otherwise split into two fragments that match nothing.
+_WORD_RE = re.compile(r"[a-zà-ÿ]{3,}|cv")
+
+# Deliberately crude, not a real stemmer: strips a handful of common French
+# verb/adjective endings so paraphrases of the same tool ("annule" vs.
+# "annuler", "postule" vs. "postulée") still overlap. Longest suffix first
+# so "ées" strips as one unit instead of leaving a trailing "e". Only tried
+# on words with enough left over (>=3 chars of real stem) to stay meaningful
+# -- short words are returned unstemmed rather than mangled.
+_FRENCH_SUFFIXES = ("ées", "ée", "és", "er", "es", "e", "é")
+
+
+def _stem(word: str) -> str:
+    if len(word) < 5:
+        return word
+    for suffix in _FRENCH_SUFFIXES:
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[: -len(suffix)]
+    return word
 
 
 def _tokenize(text: str) -> set[str]:
-    return set(_WORD_RE.findall(text.lower()))
+    text = text.replace("'", "").replace("’", "")
+    return {_stem(w) for w in _WORD_RE.findall(text.lower())}
 
 
 _TOOL_KEYWORDS = {
     t.name: _tokenize(t.name.replace("_", " ") + " " + (t.description or ""))
     for t in TOOLS
 }
+
+# Inverse-document-frequency-style weighting, computed once: a keyword that
+# shows up in most tools' name+description ("offre", "mail" -- structurally
+# common across a job-search agent's own vocabulary) barely distinguishes
+# between them and shouldn't score like a keyword that's genuinely rare and
+# therefore specific (like a tool's own distinctive name fragment). Without
+# this, common words alone were enough to tie several unrelated tools with
+# the actually-relevant one, and ties then fall back to TOOLS' declaration
+# order -- which silently, systematically disadvantages whatever's declared
+# later in the list for no reason related to the query at all.
+_TOKEN_TOOL_COUNTS: dict[str, int] = {}
+for _keywords in _TOOL_KEYWORDS.values():
+    for _word in _keywords:
+        _TOKEN_TOOL_COUNTS[_word] = _TOKEN_TOOL_COUNTS.get(_word, 0) + 1
+
+
+def _tool_score(query_words: set[str], tool_name: str) -> float:
+    return sum(1.0 / _TOKEN_TOOL_COUNTS[w] for w in query_words & _TOOL_KEYWORDS[tool_name])
 
 
 def _select_relevant_tools(messages: list) -> list:
@@ -1312,9 +1354,7 @@ def _select_relevant_tools(messages: list) -> list:
             break
     query_words = _tokenize(query)
 
-    scored = sorted(
-        TOOLS, key=lambda t: len(query_words & _TOOL_KEYWORDS[t.name]), reverse=True
-    )
+    scored = sorted(TOOLS, key=lambda t: _tool_score(query_words, t.name), reverse=True)
 
     selected = [t for t in TOOLS if t.name in _CORE_TOOL_NAMES]
     selected_names = {t.name for t in selected}
