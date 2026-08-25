@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from langchain_core.messages import trim_messages
+from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage, trim_messages
 from langchain_core.tools import tool
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.prebuilt import create_react_agent
@@ -1256,6 +1256,50 @@ def get_history(thread_id: str) -> list[dict]:
     return turns
 
 
+def _repair_orphaned_tool_calls(thread_id: str) -> None:
+    """An AIMessage requesting a tool call gets checkpointed the moment the
+    "agent" graph node produces it -- BEFORE the "tools" node actually runs
+    the tool and produces the matching ToolMessage. If the process dies in
+    that window (confirmed live: tools/discord_bot.py's /ask wraps the
+    agent call in asyncio.wait_for(..., timeout=AGENT_TIMEOUT_SECONDS), but
+    that only stops WAITING on a slow run_in_executor call -- the
+    underlying thread keeps running a slow tool, e.g.
+    rechercher_contacts_entreprise's Pappers/Hunter/Snov/web-search chain,
+    detached from the request that gave up on it; a daemon restart, crash,
+    or OOM while that orphaned thread is still mid-tool-call kills it for
+    good) the checkpoint is left with a tool_call no ToolMessage will ever
+    answer. Every LLM provider rejects that history outright ("Found
+    AIMessages with tool_calls that do not have a corresponding
+    ToolMessage"), and since the checkpoint just replays on every future
+    turn, the thread stays permanently stuck until repaired -- confirmed
+    live on a real Discord thread.
+
+    Called at the top of every ask() so a stuck thread self-heals on its
+    very next message instead of erroring forever: scans the WHOLE history
+    (not just the last message -- the user can send another message after
+    the interrupted one, pushing the orphaned AIMessage away from the end,
+    exactly what happened in the real case this was found from) for any
+    AIMessage tool_call with no matching ToolMessage anywhere, and removes
+    that AIMessage via RemoveMessage -- the attempted turn is gone, but
+    nothing real was ever recorded from it either (the tool never finished),
+    so there's nothing to actually lose."""
+    config = {"configurable": {"thread_id": thread_id}}
+    state = _agent.get_state(config)
+    if not state or not state.values.get("messages"):
+        return
+    messages = state.values["messages"]
+    answered_ids = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
+    broken = [
+        m for m in messages
+        if isinstance(m, AIMessage) and any(tc["id"] not in answered_ids for tc in (m.tool_calls or []))
+    ]
+    if not broken:
+        return
+    print(f"[chat] thread {thread_id}: repairing {len(broken)} orphaned tool call(s) left over "
+          f"from an interrupted previous run", flush=True)
+    _agent.update_state(config, {"messages": [RemoveMessage(id=m.id) for m in broken]})
+
+
 def ask(message: str, thread_id: str) -> str:
     """Single entry point used by discord_bot.py -- thread_id = Discord user
     id, so each person gets their own conversation memory.
@@ -1268,6 +1312,7 @@ def ask(message: str, thread_id: str) -> str:
     before chaining correctly -- 40 leaves room for that inefficiency without
     going back to an unbounded loop (AGENT_TIMEOUT_SECONDS stays the
     time-based safety net in discord_bot.py)."""
+    _repair_orphaned_tool_calls(thread_id)
     try:
         result = _agent.invoke(
             {"messages": [{"role": "user", "content": message}]},
