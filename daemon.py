@@ -36,6 +36,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 from core import daemon_state
 from core.db import get_connection, init_db, parse_utc
 from graphs import discovery_graph, email_graph
+from tools.common import company_label
 from tools.discord_style import COLOR_DEFAULT, COLOR_ERROR, base_embed
 from tools.notify_tools import notify_all
 
@@ -111,10 +112,12 @@ def _run_discovery() -> None:
                       len(expired), ", ".join(f"#{o['id']}" for o in expired))
             notify_all(
                 f"hobot -- {len(expired)} offer(s) expired",
-                "\n".join(f"#{o['id']} {o['title']} -- {o['company']}" for o in expired),
+                "\n".join(f"#{o['id']} {o['title']} -- {company_label(o['company'])}" for o in expired),
                 embed=base_embed(
                     f"{len(expired)} offer(s) removed (dead link)", color=COLOR_DEFAULT,
-                    description="\n".join(f"**#{o['id']}** {o['title']} -- {o['company']}" for o in expired)[:2048],
+                    description="\n".join(
+                        f"**#{o['id']}** {o['title']} -- {company_label(o['company'])}" for o in expired
+                    )[:2048],
                 ),
                 kind="cleanup", offer_ids=[o["id"] for o in expired],
             )
@@ -136,6 +139,22 @@ def _run_discovery() -> None:
             )
     except Exception:
         log.error("quota alert check failed:\n%s", traceback.format_exc())
+
+    # Best-effort, same reasoning as the two checks above -- a stale-draft
+    # check is just a database read plus, at most, a notification.
+    try:
+        from core.queries import get_stale_draft_alerts
+        for alert in get_stale_draft_alerts(STALE_DRAFT_DAYS):
+            message = (f"{alert['title']} -- {company_label(alert['company'])} "
+                       f"(drafted {alert['drafted_at']}, still not sent)")
+            log.info("[stale draft] alert: %s", message)
+            notify_all(
+                alert["notif_title"], message,
+                embed=base_embed("Draft pending", color=COLOR_DEFAULT, description=message),
+                kind="stale_draft", offer_ids=[alert["offer_id"]],
+            )
+    except Exception:
+        log.error("stale draft alert check failed:\n%s", traceback.format_exc())
 
 
 def _run_email_watch() -> None:
@@ -215,14 +234,17 @@ def _build_weekly_digest() -> dict | None:
         lines.append("By source: " + ", ".join(f"{r['source']}: {r['c']}" for r in by_source))
     if top:
         lines.append("Best offers this week:")
-        lines += [f"[{r['score']}] {r['title']} -- {r['company']}" for r in top]
+        lines += [f"[{r['score']}] {r['title']} -- {company_label(r['company'])}" for r in top]
     lines.append(f"Applications sent this week: {n_applied}")
     lines.append(f"Letter drafts pending (current total, not just this week): {n_letters_pending}")
     if replies:
         lines.append("Replies received this week: " + ", ".join(f"{r['category']}: {r['c']}" for r in replies))
     if stale_drafts:
         lines.append(f"Drafts pending for more than {STALE_DRAFT_DAYS} days:")
-        lines += [f"#{r['id']} {r['title']} -- {r['company']} (since {r['drafted_at']})" for r in stale_drafts]
+        lines += [
+            f"#{r['id']} {r['title']} -- {company_label(r['company'])} (since {r['drafted_at']})"
+            for r in stale_drafts
+        ]
 
     return {
         "n_new": n_new, "by_source": by_source, "top": top, "n_applied": n_applied,
@@ -266,7 +288,7 @@ def _run_weekly_digest() -> tuple[str, str | None]:
         if top:
             embed.add_field(
                 name="Best offers this week",
-                value="\n".join(f"**{r['score']}** -- {r['title']} -- {r['company']}" for r in top)[:1024],
+                value="\n".join(f"**{r['score']}** -- {r['title']} -- {company_label(r['company'])}" for r in top)[:1024],
                 inline=False,
             )
         embed.add_field(name="Applications sent", value=str(n_applied), inline=True)
@@ -280,7 +302,9 @@ def _run_weekly_digest() -> tuple[str, str | None]:
         if stale_drafts:
             embed.add_field(
                 name=f"Drafts pending for more than {STALE_DRAFT_DAYS} days",
-                value="\n".join(f"**#{r['id']}** {r['title']} -- {r['company']}" for r in stale_drafts)[:1024],
+                value="\n".join(
+                    f"**#{r['id']}** {r['title']} -- {company_label(r['company'])}" for r in stale_drafts
+                )[:1024],
                 inline=False,
             )
         notify_all("hobot -- weekly digest", data["text"], embed=embed, kind="digest")

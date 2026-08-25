@@ -99,7 +99,8 @@ class StatusPane(VerticalScroll):
         if last_discovery:
             discovery_text = (
                 f"Last run: {last_discovery['finished_at']} "
-                f"({last_discovery['source']}, {last_discovery['n_new']} new / {last_discovery['n_found']} found)\n"
+                f"({last_discovery['n_new']} new / {last_discovery['n_found']} found "
+                f"across {last_discovery['n_sources']} source(s))\n"
             )
         else:
             discovery_text = "Last run: never\n"

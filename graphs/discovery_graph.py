@@ -55,6 +55,7 @@ when it's configured: one query per letter, never more.
 import operator
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import Annotated, TypedDict
 
@@ -71,7 +72,9 @@ from tools import (
     sources_adzuna, sources_ats, sources_francetravail, sources_jobspy,
     sources_labonneboite, sources_lba, web_search,
 )
-from tools.common import SPONTANEOUS_LEAD_SOURCES, company_health_check, normalize_text, upsert_application
+from tools.common import (
+    SPONTANEOUS_LEAD_SOURCES, company_health_check, company_label, normalize_text, upsert_application,
+)
 from tools.discord_style import COLOR_ACTIVE, base_embed
 from tools.notify_tools import notify_all
 
@@ -546,20 +549,41 @@ def _relevance_keywords(target_roles: list[str]) -> list[str]:
     """Derives a cheap pre-filter (no LLM) from the profile's target roles,
     instead of a fixed keyword list -- a hardcoded pre-filter for one role
     would silently break relevance for any other. Every significant word
-    (>=4 letters) of a target role becomes an accepted keyword. Empty (no
-    profile set) -> no filter, everything passes."""
+    (>=4 letters) of a target role becomes an accepted keyword, PLUS every
+    word that's all-uppercase in the role's own original text regardless of
+    length -- the >=4 rule alone drops short but domain-critical acronyms
+    (IA, ML, NLP, LLM, RAG...) along with the French function words (de, le,
+    la...) it's meant to catch; for a role like "Ingenieur IA" that silently
+    threw out the one word that actually matters (same failure mode already
+    hit once and fixed for "cv" in chat_agent.py's tool-selection matcher).
+    Deliberately excludes contract-type words (alternance, stage...): they
+    used to be the only thing keeping a title like "Data Scientist" alive
+    without the word "ingenieur" in it too, which is what made the keyword
+    set this narrow in the first place -- contract-type and seniority
+    mismatches are exactly what the LLM scorer already catches well on its
+    own (see axes_progression in chat_agent.py, the /gaps command's tool).
+    Empty (no profile set) -> no filter, everything passes."""
     keywords = set()
     for role in target_roles:
+        keywords |= {normalize_text(w) for w in role.split() if w.isupper() and len(w) >= 2}
         for word in normalize_text(role).split():
             if len(word) >= 4:
                 keywords.add(word)
     return list(keywords)
 
 
-def _is_relevant(title: str, keywords: list[str]) -> bool:
+def _is_relevant(title: str, description: str, keywords: list[str]) -> bool:
+    """Title first (cheap, and almost always enough); description only as a
+    fallback when the title alone doesn't match -- catches a genuinely
+    relevant posting whose title is too generic to tell (La Bonne
+    Alternance's own spontaneous-lead titles are a plain sector label, e.g.
+    "Candidature spontanee -- Programmation informatique", never the
+    profile's own wording)."""
     if not keywords:
         return True
-    return any(kw in normalize_text(title) for kw in keywords)
+    if any(kw in normalize_text(title) for kw in keywords):
+        return True
+    return any(kw in normalize_text(description) for kw in keywords)
 
 
 # Some listings aren't real employer postings but ads from a training
@@ -679,7 +703,7 @@ def dedupe_node(state: DiscoveryState) -> dict:
             ).fetchone()
             if row:
                 conn.execute("UPDATE offers SET last_seen_at = datetime('now') WHERE id = ?", (row["id"],))
-            elif not _is_relevant(offer.get("title"), keywords):
+            elif not _is_relevant(offer.get("title"), offer.get("description"), keywords):
                 skipped_irrelevant += 1
             elif _is_formation_intermediary(offer.get("description")):
                 skipped_formation += 1
@@ -1027,7 +1051,15 @@ def _n_new_for_stat_source(n_new_by_source: dict, source: str) -> int:
 
 
 def log_run_node(state: DiscoveryState) -> dict:
+    """run_id: one identifier shared by every row THIS run writes (one per
+    source) -- without it, /status and the TUI's Status pane had no
+    reliable way to tell which run_log rows belong to the same scheduled
+    run rather than different ones, and ended up just reading the single
+    most-recently-inserted row as if it summarized the whole run (see
+    core/queries.py::get_status_summary). See core/db.py::_backfill_run_ids
+    for how existing rows (written before this existed) get one too."""
     n_new_by_source = state.get("n_new_by_source", {})
+    run_id = uuid.uuid4().hex[:12]
     with get_connection() as conn:
         for stat in state["stats"]:
             error = stat.get("error")
@@ -1040,10 +1072,10 @@ def log_run_node(state: DiscoveryState) -> dict:
             if backoff_until:
                 _log(f"[circuit-breaker] {stat['source']} failing -> backed off until {backoff_until}")
             conn.execute(
-                """INSERT INTO run_log (run_type, source, finished_at, n_found, n_new, errors, backoff_until, query, query_reasoning)
-                   VALUES ('discovery', ?, datetime('now'), ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO run_log (run_type, source, finished_at, n_found, n_new, errors, backoff_until, query, query_reasoning, run_id)
+                   VALUES ('discovery', ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?)""",
                 (stat["source"], stat.get("n_found", 0), _n_new_for_stat_source(n_new_by_source, stat["source"]),
-                 error, backoff_until, stat.get("query"), stat.get("query_reasoning")),
+                 error, backoff_until, stat.get("query"), stat.get("query_reasoning"), run_id),
             )
 
     scored = state.get("scored_offers") or []
@@ -1058,11 +1090,11 @@ def log_run_node(state: DiscoveryState) -> dict:
         embed = base_embed(f"{n_new} new offer(s) found", color=COLOR_ACTIVE)
         if letters:
             lines.append(f"{len(letters)} cover letter(s) drafted automatically (score >= {LETTER_SCORE_THRESHOLD}):")
-            lines += [f"[{o['score']}] {o['title']} -- {o['company']}" for o in letters]
+            lines += [f"[{o['score']}] {o['title']} -- {company_label(o['company'])}" for o in letters]
             notified_ids += [o["id"] for o in letters if o.get("id") is not None]
             embed.add_field(
                 name=f"Letters drafted automatically (score >= {LETTER_SCORE_THRESHOLD})",
-                value="\n".join(f"**{o['score']}** -- {o['title']} -- {o['company']}" for o in letters)[:1024],
+                value="\n".join(f"**{o['score']}** -- {o['title']} -- {company_label(o['company'])}" for o in letters)[:1024],
                 inline=False,
             )
         if scored:
@@ -1072,21 +1104,23 @@ def log_run_node(state: DiscoveryState) -> dict:
             )
             if highlights:
                 lines.append("Best offers this run:")
-                lines += [f"[{o['score']}] {o['title']} -- {o['company']}" for o in highlights[:5]]
+                lines += [f"[{o['score']}] {o['title']} -- {company_label(o['company'])}" for o in highlights[:5]]
                 notified_ids += [o["id"] for o in highlights[:5] if o.get("id") is not None]
                 embed.add_field(
                     name="Best offers this run",
-                    value="\n".join(f"**{o['score']}** -- {o['title']} -- {o['company']}" for o in highlights[:5])[:1024],
+                    value="\n".join(
+                        f"**{o['score']}** -- {o['title']} -- {company_label(o['company'])}" for o in highlights[:5]
+                    )[:1024],
                     inline=False,
                 )
             elif not letters:
                 best = max(scored, key=lambda o: o.get("score") or 0)
-                lines.append(f"Best score this run: {best.get('score')} -- {best['title']} ({best['company']})")
+                lines.append(f"Best score this run: {best.get('score')} -- {best['title']} ({company_label(best['company'])})")
                 if best.get("id") is not None:
                     notified_ids.append(best["id"])
                 embed.add_field(
                     name="Best score this run",
-                    value=f"**{best.get('score')}** -- {best['title']} ({best['company']})",
+                    value=f"**{best.get('score')}** -- {best['title']} ({company_label(best['company'])})",
                     inline=False,
                 )
         if contacts_found:
@@ -1107,10 +1141,10 @@ def log_run_node(state: DiscoveryState) -> dict:
             )
         if skipped_red_flag:
             lines.append(f"{len(skipped_red_flag)} letter(s) skipped (company health warning):")
-            lines += [f"{o['title']} -- {o['company']} ({o['red_flag']})" for o in skipped_red_flag]
+            lines += [f"{o['title']} -- {company_label(o['company'])} ({o['red_flag']})" for o in skipped_red_flag]
             embed.add_field(
                 name="Letters skipped (company health warning)",
-                value="\n".join(f"**{o['company']}** -- {o['red_flag']}" for o in skipped_red_flag)[:1024],
+                value="\n".join(f"**{company_label(o['company'])}** -- {o['red_flag']}" for o in skipped_red_flag)[:1024],
                 inline=False,
             )
         skipped_irrelevant = state.get("skipped_irrelevant") or 0

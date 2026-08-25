@@ -8,6 +8,7 @@ import json
 import os
 import sqlite3
 import sys
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -102,9 +103,11 @@ CREATE TABLE IF NOT EXISTS run_log (
     errors          TEXT,
     backoff_until   TEXT,
     query           TEXT,
-    query_reasoning TEXT
+    query_reasoning TEXT,
+    run_id          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_run_log_source ON run_log(source);
+CREATE INDEX IF NOT EXISTS idx_run_log_run_id ON run_log(run_id);
 
 CREATE TABLE IF NOT EXISTS api_calls (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -312,6 +315,8 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
             _add_column(conn, "run_log", "query TEXT")
         if "query_reasoning" not in run_log_cols:
             _add_column(conn, "run_log", "query_reasoning TEXT")
+        if "run_id" not in run_log_cols:
+            _add_column(conn, "run_log", "run_id TEXT")
 
     if "daemon_flags" in tables:
         flags_cols = {row["name"] for row in conn.execute("PRAGMA table_info(daemon_flags)")}
@@ -340,6 +345,27 @@ def _backfill_scored_status(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _backfill_run_ids(conn: sqlite3.Connection) -> None:
+    """One-time backfill for rows written before run_id existed: groups by
+    (run_type, finished_at) -- every row a single scheduled run writes goes
+    in within the same log_run_node call, fast enough that they all share
+    the same datetime('now') value down to the second, a safe grouping key
+    for rows that will never be regrouped again. log_run_node itself now
+    generates a real run_id going forward; this only fixes up history.
+    Idempotent -- no-op once no row has run_id NULL."""
+    groups = conn.execute(
+        "SELECT DISTINCT run_type, finished_at FROM run_log WHERE run_id IS NULL AND finished_at IS NOT NULL"
+    ).fetchall()
+    for g in groups:
+        run_id = uuid.uuid4().hex[:12]
+        conn.execute(
+            "UPDATE run_log SET run_id = ? WHERE run_type = ? AND finished_at = ? AND run_id IS NULL",
+            (run_id, g["run_type"], g["finished_at"]),
+        )
+    if groups:
+        conn.commit()
+
+
 def init_db() -> None:
     with get_connection() as conn:
         _add_missing_columns(conn)
@@ -347,6 +373,7 @@ def init_db() -> None:
         conn.commit()
         _backfill_dedup_keys(conn)
         _backfill_scored_status(conn)
+        _backfill_run_ids(conn)
 
 
 if __name__ == "__main__":

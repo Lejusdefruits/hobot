@@ -61,9 +61,23 @@ def next_email_check(last_finished_at: str | None) -> str:
 
 def get_status_summary() -> dict:
     with get_connection() as conn:
-        last_discovery = conn.execute(
-            "SELECT * FROM run_log WHERE run_type='discovery' ORDER BY id DESC LIMIT 1"
+        # A scheduled discovery run writes one run_log row per source (see
+        # graphs/discovery_graph.py::log_run_node), all sharing one run_id --
+        # aggregate across the whole run instead of reading a single
+        # arbitrary source's row as if it summarized the run (that used to
+        # read as "0 new found" on a run where a DIFFERENT source actually
+        # found several, whichever source's row happened to be inserted last).
+        last_run_id = conn.execute(
+            "SELECT run_id FROM run_log WHERE run_type='discovery' AND run_id IS NOT NULL ORDER BY id DESC LIMIT 1"
         ).fetchone()
+        last_discovery = None
+        if last_run_id:
+            row = conn.execute(
+                """SELECT MAX(finished_at) finished_at, SUM(n_found) n_found, SUM(n_new) n_new, COUNT(*) n_sources
+                   FROM run_log WHERE run_id = ?""",
+                (last_run_id["run_id"],),
+            ).fetchone()
+            last_discovery = dict(row)
         last_email = conn.execute(
             "SELECT * FROM run_log WHERE run_type='email_watch' ORDER BY id DESC LIMIT 1"
         ).fetchone()
@@ -155,6 +169,45 @@ def list_applications(limit: int = 15) -> list:
                JOIN offers o ON o.id = a.offer_id ORDER BY a.id DESC LIMIT ?""",
             (limit,),
         ).fetchall()
+
+
+def get_stale_draft_alerts(stale_days: int) -> list[dict]:
+    """Drafts (a letter already written, never sent) older than stale_days --
+    previously only ever surfaced in the Monday weekly digest, so a draft
+    crossing the threshold right after Monday waited up to a week for a
+    reminder. Meant to run on the discovery cadence (every couple hours)
+    instead, so it's flagged same-day.
+
+    Dedup keyed on (offer_id, its current drafted_at): a notification with
+    this exact deterministic title already sent SINCE this draft's own
+    drafted_at means it's already been flagged for this version of the
+    draft -- checked against the `notifications` table directly (same
+    dedup approach as core/api_usage.py::check_quota_alerts), not a
+    separate counter. If the letter later gets redrafted (drafted_at moves
+    forward), that naturally resets the dedup window instead of silently
+    suppressing a legitimate second reminder."""
+    stale_since = (datetime.now(timezone.utc) - timedelta(days=stale_days)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        candidates = conn.execute(
+            """SELECT a.offer_id, o.title, o.company, a.drafted_at FROM applications a
+               JOIN offers o ON o.id = a.offer_id
+               WHERE a.status = 'draft' AND a.cover_letter_path IS NOT NULL AND a.drafted_at <= ?
+               ORDER BY a.drafted_at ASC""",
+            (stale_since,),
+        ).fetchall()
+        alerts = []
+        for r in candidates:
+            notif_title = f"hobot -- draft pending #{r['offer_id']}"
+            already = conn.execute(
+                "SELECT 1 FROM notifications WHERE kind = 'stale_draft' AND title = ? AND created_at >= ?",
+                (notif_title, r["drafted_at"]),
+            ).fetchone()
+            if not already:
+                alerts.append({
+                    "offer_id": r["offer_id"], "title": r["title"], "company": r["company"],
+                    "drafted_at": r["drafted_at"], "notif_title": notif_title,
+                })
+    return alerts
 
 
 def get_sources_status() -> list[dict]:

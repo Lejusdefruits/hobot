@@ -161,7 +161,8 @@ async def status(interaction: discord.Interaction):
 
     if last_discovery:
         discovery_line = (f"Last: {last_discovery['finished_at']} "
-                           f"({last_discovery['source']}, {last_discovery['n_new']} new)\n"
+                           f"({last_discovery['n_new']} new / {last_discovery['n_found']} found "
+                           f"across {last_discovery['n_sources']} source(s))\n"
                            f"Next: {next_discovery}")
     else:
         discovery_line = f"Never run\nNext: {next_discovery}"

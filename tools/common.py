@@ -158,6 +158,15 @@ def company_health_check(conn: Connection, offer_id: int, company: str | None) -
     return {"effectif": sante.get("effectif"), "red_flag": red_flag}
 
 
+def company_label(company: str | None) -> str:
+    """Some sources (France Travail, in particular) legitimately anonymize
+    the employer on a listing -- company is None, not missing data. Shown
+    as the literal "None" in an f-string otherwise (seen live in a weekly
+    digest, on a real 88-scored offer), which reads as broken rather than
+    as an anonymous listing."""
+    return company or "(company withheld)"
+
+
 SPONTANEOUS_LEAD_SOURCES = ("lba_recruiter", "labonneboite", "ats_lead")
 
 # Readable labels for the `source` column -- used by /sources, /log, and
