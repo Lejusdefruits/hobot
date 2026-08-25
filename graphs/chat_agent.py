@@ -1264,10 +1264,23 @@ else:
     MAX_CONTEXT_TOKENS = 6000 if LLM_PROVIDER == "ollama" else 400
 
 
+# start_on="human" matters as much as the token budget itself: without it,
+# trim_messages can cut a tool round-trip in half, leaving a ToolMessage as
+# the first message after the system prompt with no AIMessage(tool_calls=...)
+# before it to answer for it -- confirmed directly, this reproduces with a
+# plain 3-line synthetic conversation at several budget sizes. Most providers
+# reject that as an invalid role sequence; Groq's harmony-templated models in
+# particular surface it as a flat "400 failed to render tokens with harmony"
+# with no hint of what was actually wrong. start_on="human" makes
+# trim_messages walk forward to the next real HumanMessage instead of
+# stopping mid-pair -- if none exists in the trimmed window it drops to just
+# the system message, same as an over-tight budget already does, rather than
+# emitting a broken sequence.
 def _trim_history(state: dict) -> dict:
     trimmed = trim_messages(
         state["messages"], max_tokens=MAX_CONTEXT_TOKENS, strategy="last",
         token_counter="approximate", include_system=True, allow_partial=False,
+        start_on="human",
     )
     return {"llm_input_messages": trimmed}
 
