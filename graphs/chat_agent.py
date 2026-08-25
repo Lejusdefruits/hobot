@@ -1175,6 +1175,11 @@ Non-negotiable rules:
 - If no profile is saved yet (profil_candidat returns nothing) and the user
   describes what they're looking for or pastes a CV as text, use definir_profil
   to save it before any other action that depends on it (scoring, letters).
+- Before asking the user what role/domain/keyword to search for, call
+  profil_candidat first -- if it has target roles, use those as the search
+  keyword instead of asking. Only ask if the profile has no target roles at
+  all, or the user's request clearly overrides them (a different role than
+  their profile says).
 - By default, a reply to an email is a DRAFT (creer_brouillon), never a real send.
 - Only use preparer_envoi_mail if the user explicitly wrote that they want to
   send the email now -- when in doubt, make a draft and ask.
