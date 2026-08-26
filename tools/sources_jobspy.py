@@ -1,20 +1,30 @@
 """JobSpy connector -- multi-site scraping, no API key required.
 
 JOBSPY_SITES (.env) controls which sites get queried. Indeed remains the most
-reliable default. Glassdoor resists scraping particularly well (JobSpy's
-location resolution against it fails consistently -- confirmed not a
-hobot-side config mistake, an upstream bug: JobSpy's own
-[#279](https://github.com/speedyapply/JobSpy/issues/279), open since 2025-05,
-several other users hitting the same "location not parsed" 400/403). "google"
-was tested live (2026-08-21): it returns 0 results on every query tried,
-French and English, including JobSpy's own example query verbatim -- no
-CAPTCHA/consent wall detected either, which points to a scraper broken by a
-Google markup change rather than a query-format problem, matching JobSpy's
-own [#284](https://github.com/speedyapply/JobSpy/issues/284), open since
-2025-06, same symptom reported independently by five other users. Left as a
-supported value (site_name accepts it) in case it starts working again, but
-don't expect results from it today. "linkedin" was also tested live the same
-day and DOES work --
+reliable default. Glassdoor resists scraping particularly well -- JobSpy's
+own location-resolution request against it 400s ("location not parsed"),
+confirmed not a hobot-side config mistake: upstream issue
+[#279](https://github.com/speedyapply/JobSpy/issues/279) (open since 2025-05)
+and a real, minimal fix already proposed in
+[#384](https://github.com/speedyapply/JobSpy/pull/384) (a stray trailing
+slash in get_glassdoor_url doubling up with the endpoint path it's appended
+to). Verified that fix live (2026-08-26) though: even with the double-slash
+corrected, the request now gets a straight HTTP 403 from a Cloudflare
+"Attention Required" challenge page -- Glassdoor is separately blocking via
+WAF, so #384 is a legitimate bug fix but doesn't by itself restore results
+here. "google" was tested live (2026-08-21, re-confirmed 2026-08-26): it
+returns 0 results on every query tried, French and English, including
+JobSpy's own example query verbatim. Confirmed this time as Google's own
+automated-traffic fallback response (an `emsg=SG_REL` degraded-access shell
+page, not a real search results page -- no job data present at all, not
+even in a form a fixed selector could extract), not a stale parser --
+matches JobSpy's own [#284](https://github.com/speedyapply/JobSpy/issues/284)
+(open since 2025-06, same symptom independently reported by five other
+users), no open PR against it. Left as a supported value (site_name accepts
+it) in case it starts working again, but don't expect results from either
+today -- both are anti-automation blocking on the site's side at this point,
+not something a JobSpy code change can fix. "linkedin" was also tested live
+the same day and DOES work --
 real results, no CAPTCHA -- but JobSpy's own upstream docs warn it rate-limits
 hard (around page 10) without a paid proxy, the same wall Glassdoor already
 hit here. Adding it to JOBSPY_SITES is a real, accepted trade-off: more

@@ -421,12 +421,21 @@ when that happens, it just means fewer results from that one site.
 `glassdoor` and `google` are also technically supported but were found
 broken in testing (glassdoor: location resolution fails outright; google:
 returns 0 results on every query tried) — confirmed not a hobot-side mistake,
-both are open upstream bugs in JobSpy itself
+both are open upstream issues in JobSpy itself
 ([#279](https://github.com/speedyapply/JobSpy/issues/279) for glassdoor,
 [#284](https://github.com/speedyapply/JobSpy/issues/284) for google, both
-open over a year with several other users hitting the same symptom) — see
-`tools/sources_jobspy.py` if you want to re-check them yourself later.
-`zip_recruiter` is untested here.
+open over a year with several other users hitting the same symptom).
+Glassdoor's actual code bug already has a real, minimal fix proposed
+upstream ([#384](https://github.com/speedyapply/JobSpy/pull/384)) — verified
+it live: correct, but Glassdoor separately blocks the request via a
+Cloudflare WAF challenge regardless, so it doesn't restore results by
+itself. Google's 0 results traced to the same kind of thing one layer up:
+the response is Google's own automated-traffic fallback page, not a real
+results page with no matching selector — no parser fix is possible against
+a response that contains no job data at all. Both are anti-automation
+blocking on the site's side at this point, not something fixable in
+JobSpy's own code — see `tools/sources_jobspy.py` if you want to re-check
+them yourself later. `zip_recruiter` is untested here.
 
 Adzuna, JobSpy, and France Travail's free-text keywords aren't fixed to your
 target roles: before each scheduled run, the AI picks up to two keywords per
