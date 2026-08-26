@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS user_profile (
     education       TEXT,
     target_roles    TEXT,
     target_locations TEXT,
+    scoring_notes   TEXT,
     cv_source_path  TEXT,
     cv_format       TEXT,
     cv_uploaded_at  TEXT,
@@ -241,7 +242,7 @@ def get_user_profile() -> dict | None:
     structured fields the graphs actually need."""
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT full_name, skills, target_roles, target_locations FROM user_profile WHERE id = 1"
+            "SELECT full_name, skills, target_roles, target_locations, scoring_notes FROM user_profile WHERE id = 1"
         ).fetchone()
     if not row:
         return None
@@ -250,6 +251,7 @@ def get_user_profile() -> dict | None:
         "skills": json.loads(row["skills"] or "[]"),
         "target_roles": json.loads(row["target_roles"] or "[]"),
         "target_locations": json.loads(row["target_locations"] or "[]"),
+        "scoring_notes": json.loads(row["scoring_notes"] or "[]"),
     }
 
 
@@ -298,6 +300,8 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
         profile_cols = {row["name"] for row in conn.execute("PRAGMA table_info(user_profile)")}
         if "full_name" not in profile_cols:
             _add_column(conn, "user_profile", "full_name TEXT")
+        if "scoring_notes" not in profile_cols:
+            _add_column(conn, "user_profile", "scoring_notes TEXT")
         if "cv_source_path" not in profile_cols:
             _add_column(conn, "user_profile", "cv_source_path TEXT")
             _add_column(conn, "user_profile", "cv_format TEXT")

@@ -766,7 +766,7 @@ Candidate profile:
 - Target roles: {target_roles}
 - Target locations: {target_locations}
 
-Offer to evaluate:
+{scoring_notes_block}Offer to evaluate:
 - Title: {title}
 - Company: {company}
 - Location: {location}
@@ -784,6 +784,26 @@ Low score if the offer is off-topic (different field), poorly located, or clearl
 The web search information is only a SUPPLEMENT for thin offer descriptions --
 never use it as the sole justification for a high score, the offer's own
 description remains the primary source."""
+
+
+def _format_scoring_notes(notes: list[str]) -> str:
+    """Standing scoring instructions from the user (user_profile.scoring_notes,
+    added/removed via modifier_profil in chat -- e.g. "score les postes de
+    conseil plus bas", "je ne veux pas de CDI, seulement de l'alternance"),
+    injected into SCORE_PROMPT with explicit priority over the rest of its
+    reasoning. Lets the user correct scoring behavior by talking to the
+    agent instead of editing code. Empty -> empty block, never a noisy "no
+    instructions" section for the common case of nobody having set any."""
+    if not notes:
+        return ""
+    bullets = "\n".join(f"  - {n}" for n in notes)
+    return (
+        "Explicit instructions from the user, given through chat (TAKE PRIORITY "
+        "over the general criteria below -- follow them STRICTLY even if it "
+        "lowers or raises the score from what those criteria alone would "
+        "suggest):\n"
+        f"{bullets}\n\n"
+    )
 
 SCORE_QUEUE_QUERY = """
     SELECT id, source, url, title, company, location, description
@@ -857,7 +877,8 @@ def score_node(state: DiscoveryState, respect_load_gate: bool = True) -> dict:
             _log(f"[score] skipped this run -- {reason} (will retry next scheduled run)")
             return {"scored_offers": []}
 
-    profile = get_user_profile() or {"skills": [], "target_roles": [], "target_locations": []}
+    profile = get_user_profile() or {"skills": [], "target_roles": [], "target_locations": [], "scoring_notes": []}
+    scoring_notes_block = _format_scoring_notes(profile.get("scoring_notes") or [])
     scored = []
     company_searches_done = 0
     searched_companies: dict[str, str] = {}  # avoids searching the same company twice in this run
@@ -887,6 +908,7 @@ def score_node(state: DiscoveryState, respect_load_gate: bool = True) -> dict:
                     skills=", ".join(profile["skills"]),
                     target_roles=", ".join(profile["target_roles"]),
                     target_locations=", ".join(profile["target_locations"]),
+                    scoring_notes_block=scoring_notes_block,
                     title=row["title"] or "",
                     company=row["company"] or "",
                     location=row["location"] or "",

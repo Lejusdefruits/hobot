@@ -73,6 +73,11 @@ class ProfilePane(VerticalScroll):
             f"Target roles: {', '.join(profile.get('target_roles') or []) or '(none)'}",
             f"Target locations: {', '.join(profile.get('target_locations') or []) or '(none)'}",
         ]
+        if profile.get("scoring_notes"):
+            # Read-only here on purpose -- these are set through the Chat
+            # pane (modifier_profil), not this form, since the point is to
+            # be able to just tell the agent the rule in plain language.
+            lines.append("Scoring notes: " + "; ".join(profile["scoring_notes"]))
         content.update("\n".join(lines))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

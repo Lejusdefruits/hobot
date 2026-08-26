@@ -389,14 +389,20 @@ def description_complete_offre(offer_id: int) -> str:
 @tool
 def profil_candidat() -> str:
     """Returns the candidate's profile (name, skills, target roles, target
-    locations) -- check this before writing a cover letter or a reply."""
+    locations, standing scoring instructions) -- check this before writing
+    a cover letter or a reply."""
     profile = get_user_profile()
     if not profile:
         return "No profile saved yet -- use definir_profil to create one."
-    return (f"Name: {profile.get('full_name') or '(not set)'}\n"
-            f"Skills: {', '.join(profile['skills'])}\n"
-            f"Target roles: {', '.join(profile['target_roles'])}\n"
-            f"Target locations: {', '.join(profile['target_locations'])}")
+    lines = [
+        f"Name: {profile.get('full_name') or '(not set)'}",
+        f"Skills: {', '.join(profile['skills'])}",
+        f"Target roles: {', '.join(profile['target_roles'])}",
+        f"Target locations: {', '.join(profile['target_locations'])}",
+    ]
+    if profile.get("scoring_notes"):
+        lines.append("Scoring notes: " + "; ".join(profile["scoring_notes"]))
+    return "\n".join(lines)
 
 
 @tool
@@ -866,17 +872,28 @@ def comptes_mail_suivis() -> str:
     return "\n".join(lines)
 
 
-PROFIL_CHAMPS = ("skills", "target_roles", "target_locations")
+PROFIL_CHAMPS = ("skills", "target_roles", "target_locations", "scoring_notes")
 
 
 @tool
 def modifier_profil(champ: str, action: str, valeur: str) -> str:
     """Edits the candidate's profile (what rechercher_offres and scoring
-    use). champ: 'skills', 'target_roles', or 'target_locations'. action:
-    'ajouter' (add) or 'retirer' (remove). valeur: the item in question, e.g.
-    champ='target_locations', action='ajouter', valeur='Lyon'."""
+    use). champ: 'skills', 'target_roles', 'target_locations', or
+    'scoring_notes'. action: 'ajouter' (add) or 'retirer' (remove). valeur:
+    the item in question, e.g. champ='target_locations', action='ajouter',
+    valeur='Lyon'.
+
+    scoring_notes is different from the other three: not a profile fact, but
+    a standing instruction on HOW to score, injected into score_node's own
+    prompt (graphs/discovery_graph.py) with explicit priority over its usual
+    criteria, for every future scheduled scoring run until removed -- use
+    this whenever the user says something like "score lower any offer that
+    requires 5+ years experience" or "je ne veux pas d'alternance en
+    conseil" and clearly means it as a lasting rule, not a one-off comment
+    about a single posting. Each note is its own list entry (ajouter one at
+    a time for several rules), removed the same way once no longer wanted."""
     if champ not in PROFIL_CHAMPS:
-        return f"Invalid field '{champ}' -- use 'skills', 'target_roles', or 'target_locations'."
+        return f"Invalid field '{champ}' -- use 'skills', 'target_roles', 'target_locations', or 'scoring_notes'."
     if action not in ("ajouter", "retirer"):
         return f"Invalid action '{action}' -- use 'ajouter' or 'retirer'."
 
