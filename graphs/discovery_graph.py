@@ -802,6 +802,22 @@ SCORE_QUEUE_QUERY = """
 THIN_DESCRIPTION_THRESHOLD = 200
 MAX_COMPANY_SEARCHES_PER_RUN = int(os.environ.get("DISCOVERY_MAX_COMPANY_SEARCHES_PER_RUN", "10"))
 
+# Both score_node and draft_letters_node feed the offer's own description
+# into a ONE-SHOT LLM call -- unlike chat_agent.py's details_offre (which
+# truncates too, but tells the model it did and offers
+# description_complete_offre for the rest), there's no recovery here: a
+# description cut short is simply never seen, silently, and the model has
+# no way to know or ask for more. Checked live against the real database:
+# 23% of offers exceed 1500 characters (the previous limit here), and 97%
+# of JobSpy/Indeed postings specifically do (avg ~4.9k chars, up to ~10.2k)
+# -- meaning most JobSpy offers were being scored on well under a third of
+# their actual text, silently missing whatever requirements/stack details
+# happened to fall after the cut. This limit is characters, not tokens, but
+# even the highest real figure seen (~10.2k chars, call it ~3k tokens) is a
+# small fraction of OLLAMA_NUM_CTX's default 20000 -- there was no actual
+# context-budget reason for the old, much tighter limit.
+DESCRIPTION_CHAR_LIMIT = int(os.environ.get("DISCOVERY_DESCRIPTION_CHAR_LIMIT", "12000"))
+
 # Skip scoring on a scheduled run (never an on-demand one, see
 # run_scoring_now() below) when the local machine is busy -- scoring means
 # running local LLM inference (Ollama), which competes for the same CPU as
@@ -874,7 +890,7 @@ def score_node(state: DiscoveryState, respect_load_gate: bool = True) -> dict:
                     title=row["title"] or "",
                     company=row["company"] or "",
                     location=row["location"] or "",
-                    description=(row["description"] or "")[:1500],
+                    description=(row["description"] or "")[:DESCRIPTION_CHAR_LIMIT],
                     infos_entreprise=infos_entreprise,
                 ))
                 score, reason = result.get("score"), result.get("reason")
@@ -996,7 +1012,7 @@ def draft_letters_node(state: DiscoveryState) -> dict:
                     full_name=full_name,
                     skills=", ".join(profile["skills"]), target_roles=", ".join(profile["target_roles"]),
                     title=offer["title"] or "", company=offer["company"] or "",
-                    description=(offer["description"] or "")[:3000],
+                    description=(offer["description"] or "")[:DESCRIPTION_CHAR_LIMIT],
                     infos_entreprise=infos_entreprise or "(no additional information found)",
                 ))
                 lettre = result.get("lettre", "")
