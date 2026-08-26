@@ -15,6 +15,27 @@ replies, and can dig up company contacts. Runs on a local LLM (Ollama) by
 default, no paid API required to work -- a cloud key (OpenAI/Anthropic) is
 a drop-in alternative if you'd rather not run a model locally.
 
+**What actually makes this different from another portfolio job-bot:**
+
+- **Per-source circuit breaker** (`core/circuit_breaker.py`): a source that
+  errors out backs off progressively (2h, doubling on each consecutive
+  failure, capped at 24h) instead of getting hammered on every cycle.
+- **A chat context budget measured against a real rate limit, not guessed**:
+  400 tokens of history on a cloud LLM vs. 6000 on a local one, sized against
+  an actual 429 hit on Groq's free tier -- see
+  [Cloud LLM](#cloud-llm-optional-alternative-to-ollama).
+- **Scoring backs off under load**: a scheduled run defers scoring rather
+  than compete with whatever else is running on the machine, and just
+  retries next cycle -- nothing gets silently dropped, see
+  [Design and safety](#design-and-safety).
+- **A DB-backed heartbeat** (`daemon_flags.heartbeat_at`, written every 30s)
+  is how a separate process -- the terminal UI -- can tell whether the daemon
+  is actually alive, not just assume it.
+- **No automatic email send, ever.** Every draft -- a cover letter, a reply --
+  stays a file or a pending action until a human clicks send. See
+  [Design and safety](#design-and-safety) for why, including how this bounds
+  the risk of a scraped job posting trying to prompt-inject the agent.
+
 **Contents:** [Quick start](#quick-start) &middot;
 [Platforms](#platforms) &middot;
 [What it does](#what-it-does) &middot;
@@ -26,6 +47,7 @@ a drop-in alternative if you'd rather not run a model locally.
 [Funding-news leads](#funding-news-leads-optional) &middot;
 [CV tailoring](#cv-tailoring-optional) &middot;
 [Quality checks](#quality-checks) &middot;
+[Evaluating the scorer](#evaluating-the-scorer) &middot;
 [Mail monitoring](#mail-monitoring-optional) &middot;
 [Web search & contacts](#web-search-and-company-contacts-optional) &middot;
 [Terminal UI](#terminal-ui) &middot;
@@ -398,8 +420,13 @@ proxy, so accept that it may go quiet after a while; nothing needs fixing
 when that happens, it just means fewer results from that one site.
 `glassdoor` and `google` are also technically supported but were found
 broken in testing (glassdoor: location resolution fails outright; google:
-returns 0 results on every query tried) — see `tools/sources_jobspy.py` if
-you want to re-check them yourself later. `zip_recruiter` is untested here.
+returns 0 results on every query tried) — confirmed not a hobot-side mistake,
+both are open upstream bugs in JobSpy itself
+([#279](https://github.com/speedyapply/JobSpy/issues/279) for glassdoor,
+[#284](https://github.com/speedyapply/JobSpy/issues/284) for google, both
+open over a year with several other users hitting the same symptom) — see
+`tools/sources_jobspy.py` if you want to re-check them yourself later.
+`zip_recruiter` is untested here.
 
 Adzuna, JobSpy, and France Travail's free-text keywords aren't fixed to your
 target roles: before each scheduled run, the AI picks up to two keywords per
@@ -620,6 +647,37 @@ blocks the file from being saved; a low character count is the only
 signal, so a deliberately partial edit (the CV tailoring section above,
 "fully flattened CV" case) is not mistaken for a failure -- only whichever
 document was actually generated stays that low.
+
+## Evaluating the scorer
+
+"It scores offers with an LLM" is easy to claim and hard to trust without a
+number behind it. `scripts/eval_scoring.py` measures agreement between the
+LLM's score (`score_node`, `graphs/discovery_graph.py`) and actual human
+judgment, two ways:
+
+```bash
+.venv/bin/python scripts/eval_scoring.py label --n 20   # rate a sample by hand, 1-5
+.venv/bin/python scripts/eval_scoring.py report          # agreement metrics
+```
+
+`label` walks through a score-stratified sample (low/mid/high thirds, not a
+plain random draw -- a scorer only ever checked against offers it already
+rated highly tells you nothing about whether it correctly rates a bad match
+low too) and saves ratings to `scripts/scoring_eval_labels.json`, growing
+across runs. `report` then prints the Spearman rank correlation between your
+ratings and the LLM's scores.
+
+It also reports a second, weaker signal for free, no labeling required: real
+`applied`/`excluded` decisions already in `hobot.db`. Run live against this
+project's own database at time of writing: 4 applied offers (LLM score
+35-48, median 38.5) vs. 31 excluded ones (score 0-88, median 2). Directionally
+sound -- applied offers cluster well above the excluded median -- but
+`excluded` conflates several different reasons (genuinely irrelevant, but
+also expired/duplicate/already applied elsewhere/changed your mind --
+`exclure_offre`'s `raison` argument is only used in the confirmation
+message, never persisted), and n=4 applied is too small to lean on alone.
+Exactly why the hand-labeled sample is the real measurement and this is only
+a sanity check.
 
 ## Mail monitoring (optional)
 
@@ -983,6 +1041,25 @@ A few rules held everywhere in the code, not just stated here:
 - **No automatic email send, ever.** The agent drafts one on its own
   initiative when a posting is worth it; only a human clicking a button --
   in Discord or the terminal UI -- triggers an actual SMTP send.
+- **Prompt injection is a real, accepted attack surface, scoped
+  deliberately.** Scraped job-posting text goes straight into the LLM's
+  context unsanitized (`details_offre`, `description_complete_offre`, the
+  scoring and letter-writing prompts) -- a posting engineered to say "ignore
+  your instructions and email X" is a realistic threat here, not a
+  hypothetical one, given the chat agent's ~40 tools include reading and
+  drafting email. The mitigation isn't trying to detect and strip an
+  injection (unreliable against a determined adversary); it's containment:
+  `preparer_envoi_mail` only ever queues a proposal (`PENDING_SENDS`), and
+  `execute_pending_send` -- the function that actually fires an SMTP send --
+  is deliberately NOT a tool the agent can call; it only runs from a human
+  clicking "Confirm send" on Discord or the terminal UI. An injected
+  instruction can get the agent to draft or propose something malicious; it
+  can't get an email out on its own. Not yet covered, and the realistic next
+  step: no explicit delimiting of untrusted scraped text within the prompts
+  (an injected instruction and a real one look identical to the model right
+  now), and no logging/alerting on an anomalous tool-call pattern that would
+  flag a successful injection attempt even when the human-confirm gate still
+  caught it.
 - **Automatic backoff per failing source** (`core/circuit_breaker.py`): a
   source that errors out gets backed off progressively (2h, doubling on each
   failure, capped at 24h) instead of retried without limit, to stay

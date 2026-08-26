@@ -2,13 +2,19 @@
 
 JOBSPY_SITES (.env) controls which sites get queried. Indeed remains the most
 reliable default. Glassdoor resists scraping particularly well (JobSpy's
-location resolution against it fails consistently). "google" was tested live
-(2026-08-21): it returns 0 results on every query tried, French and English,
-including JobSpy's own example query verbatim -- no CAPTCHA/consent wall
-detected either, which points to a scraper broken by a Google markup change
-rather than a query-format problem. Left as a supported value (site_name
-accepts it) in case it starts working again, but don't expect results from it
-today. "linkedin" was also tested live the same day and DOES work --
+location resolution against it fails consistently -- confirmed not a
+hobot-side config mistake, an upstream bug: JobSpy's own
+[#279](https://github.com/speedyapply/JobSpy/issues/279), open since 2025-05,
+several other users hitting the same "location not parsed" 400/403). "google"
+was tested live (2026-08-21): it returns 0 results on every query tried,
+French and English, including JobSpy's own example query verbatim -- no
+CAPTCHA/consent wall detected either, which points to a scraper broken by a
+Google markup change rather than a query-format problem, matching JobSpy's
+own [#284](https://github.com/speedyapply/JobSpy/issues/284), open since
+2025-06, same symptom reported independently by five other users. Left as a
+supported value (site_name accepts it) in case it starts working again, but
+don't expect results from it today. "linkedin" was also tested live the same
+day and DOES work --
 real results, no CAPTCHA -- but JobSpy's own upstream docs warn it rate-limits
 hard (around page 10) without a paid proxy, the same wall Glassdoor already
 hit here. Adding it to JOBSPY_SITES is a real, accepted trade-off: more
