@@ -25,7 +25,6 @@ Dispatches on user_profile.cv_format:
   as the other two and says so in its own return value.
 """
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -185,8 +184,8 @@ def _text_blocks(page) -> list[dict]:
     for b in page.get_text("dict")["blocks"]:
         if "lines" not in b:
             continue
-        lines = [" ".join(s["text"] for s in l["spans"]) for l in b["lines"]]
-        spans = [s for l in b["lines"] for s in l["spans"]]
+        lines = [" ".join(s["text"] for s in ln["spans"]) for ln in b["lines"]]
+        spans = [s for ln in b["lines"] for s in ln["spans"]]
         if spans:
             blocks.append({"bbox": b["bbox"], "text": " ".join(lines), "spans": spans})
     return blocks

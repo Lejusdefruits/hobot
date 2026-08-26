@@ -1,0 +1,10 @@
+[tool.ruff]
+# Deliberately conservative: real correctness bugs only (pyflakes, syntax
+# errors, ambiguous names), not a repo-wide style pass. E402 (import not at
+# top of file) is intentionally NOT enabled -- load_dotenv() runs before
+# several local imports throughout this codebase, on purpose, so env vars
+# are set before the module that reads them at import time gets loaded.
+lint.select = ["E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
