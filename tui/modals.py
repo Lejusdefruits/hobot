@@ -260,10 +260,9 @@ class OfferDetailScreen(ModalScreen[str | None]):
 
     def _exclude(self) -> None:
         from core.db import get_connection
+        from tools import common
         with get_connection() as conn:
-            row = conn.execute("SELECT status FROM offers WHERE id = ?", (self.offer_id,)).fetchone()
-            if row and row["status"] not in ("applied", "excluded"):
-                conn.execute("UPDATE offers SET status = 'excluded' WHERE id = ?", (self.offer_id,))
+            common.exclude_offer(conn, self.offer_id)
         # Unlike "Mark applied" (stays open -- drafting/opening the letter is
         # still a reasonable next step), there's nothing left to do here once
         # an offer's excluded, so close straight back to the list instead of

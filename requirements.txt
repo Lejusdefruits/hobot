@@ -12,8 +12,7 @@ apscheduler
 langchain-ollama
 langchain-openai
 langchain-anthropic
-weasyprint
-jinja2
+typst
 python-docx
 docxtpl
 fonttools

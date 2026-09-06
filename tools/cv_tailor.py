@@ -175,37 +175,54 @@ _SIMPLE_FONTS = {
 }
 
 
-def _text_blocks(page) -> list[dict]:
-    """One entry per visual block, its lines joined in reading order --
-    matching a multi-line paragraph against PyMuPDF's raw per-line spans
-    almost never works, a paragraph is essentially never one span's exact
-    `.text`."""
-    blocks = []
+def _page_lines(page) -> list[dict]:
+    """One entry per visual LINE, reading order (two-column aware) -- the
+    granularity _locate_summary_lines/_locate_skill_lines both need: a
+    redaction boundary has to land exactly on a real line's own edge, never
+    blurred by however PyMuPDF happened to group lines into a block on a
+    given CV export (see _locate_summary_lines's docstring for why
+    block-level grouping broke)."""
+    lines = []
     for b in page.get_text("dict")["blocks"]:
-        if "lines" not in b:
-            continue
-        lines = [" ".join(s["text"] for s in ln["spans"]) for ln in b["lines"]]
-        spans = [s for ln in b["lines"] for s in ln["spans"]]
-        if spans:
-            blocks.append({"bbox": b["bbox"], "text": " ".join(lines), "spans": spans})
-    return blocks
+        for ln in b.get("lines", []):
+            spans = ln["spans"]
+            if spans:
+                lines.append({"bbox": ln["bbox"], "text": "".join(s["text"] for s in spans), "spans": spans})
+    return sorted(lines, key=lambda ln: (ln["bbox"][0] > 250, ln["bbox"][1]))
 
 
 def _font_glyphs_ok(fontfile: Path, text: str) -> bool:
+    """False (never raises) if getBestCmap() finds no usable cmap table at
+    all -- confirmed live and common, not an edge case: a CID-keyed font
+    embedded Identity-H-encoded (the standard PDF export shape from Canva/
+    web CV builders/many LaTeX toolchains) is looked up by the PDF's own
+    ToUnicode CMap + CIDToGIDMap, never by a cmap table inside the font
+    program itself, so extract_font() routinely hands back a font with none.
+    There's no reliable way to recover per-character coverage from the
+    extracted font alone in that case, so this reports "not safe to use"
+    rather than guessing -- _pick_font's bundled-Montserrat fallback is the
+    correct, safe outcome here, just short of the full visual fidelity a
+    kept cmap would allow."""
     from fontTools.ttLib import TTFont
-    cmap = TTFont(str(fontfile)).getBestCmap()
+    try:
+        cmap = TTFont(str(fontfile)).getBestCmap()
+    except KeyError:
+        return False
     return all(ord(c) in cmap for c in text)
 
 
 def _pick_font(page, spans: list[dict], text: str) -> tuple[Path, float, tuple]:
     """Real embedded font first, checked glyph-by-glyph against the actual
-    replacement text -- confirmed in practice (fontTools cmap check against a
-    real CV's embedded, subsetted font) that this fails routinely, not
-    rarely: a Canva/Word/Docs PDF export typically only embeds the glyphs its
-    original content used, so a common letter the original text never needed
-    (a 'w', a 'z') is often simply missing. On any miss, fall back to the
-    bundled real Montserrat static instance (matches this project's most
-    common real-world case) rather than silently guessing a base-14 font.
+    replacement text -- confirmed in practice that this fails routinely, not
+    rarely, two different ways: a Canva/Word/Docs PDF export typically only
+    embeds the glyphs its original content used, so a common letter the
+    original text never needed (a 'w', a 'z') is often simply missing; and a
+    CID-keyed font embedded Identity-H (also common, e.g. many LaTeX/web CV
+    builder exports) extracts with no cmap table at all, so per-character
+    coverage can't be checked at all (_font_glyphs_ok's docstring). On
+    either miss, fall back to the bundled real Montserrat static instance
+    (matches this project's most common real-world case) rather than
+    silently guessing a base-14 font.
 
     Deliberately only DECIDES which font file to use here and does not
     register it on the page yet (no page.insert_font call) -- that has to
@@ -218,10 +235,22 @@ def _pick_font(page, spans: list[dict], text: str) -> tuple[Path, float, tuple]:
     color = ((color_int >> 16 & 255) / 255, (color_int >> 8 & 255) / 255, (color_int & 255) / 255)
 
     # extract_font needs an xref, not a name -- PyMuPDF only exposes the font
-    # name on the span, so go through get_fonts() to resolve it.
+    # name on the span, so go through get_fonts() to resolve it. Compared
+    # with the PDF subset-tag prefix stripped on both sides ("ABCDEF+Real
+    # Name", six uppercase letters per the PDF spec, added to a font
+    # embedded as a subset) -- get_fonts() reports it, the span's own "font"
+    # field never does, so a straight == never matched on any subsetted
+    # embedded font and silently fell back to the bundled Montserrat every
+    # time, confirmed live on a real CV (including this project's own
+    # profile_source/original.pdf -- every tailored CV before this fix
+    # rendered its rewritten paragraph in the wrong font).
+    def _unsubset(name: str) -> str:
+        return name.split("+", 1)[1] if len(name) > 7 and name[6] == "+" and name[:6].isupper() else name
+
     try:
+        target = _unsubset(ref["font"])
         for f in page.get_fonts():
-            if f[3] == ref["font"]:
+            if _unsubset(f[3]) == target:
                 fontbuffer = page.parent.extract_font(f[0])[-1]
                 tmpdir = Path(tempfile.mkdtemp())
                 tmp = tmpdir / "embedded.ttf"
@@ -263,6 +292,67 @@ def _sample_background(page, bbox: fitz.Rect) -> tuple[int, int, int]:
     return Counter(votes).most_common(1)[0][0] if votes else (255, 255, 255)
 
 
+def _wrap_lines(font: fitz.Font, fontsize: float, width: float, text: str) -> list[str]:
+    """Word-wraps `text` to `width` -- measuring against the exact loaded
+    font object is what actually matters here, page.get_text_length() only
+    has accurate metrics for the base-14/CJK built-ins, not an arbitrary
+    embedded or bundled font. Shared between _wrap_and_insert (the real
+    insertion) and _fit_to_box (a dry-run measurement before committing to
+    an edit) so the two can never disagree on how many lines something
+    wraps to."""
+    words = text.split(" ")
+    lines, current = [], ""
+    for w in words:
+        trial = (current + " " + w).strip()
+        if font.text_length(trial, fontsize) <= width:
+            current = trial
+        else:
+            lines.append(current)
+            current = w
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _max_lines(fontsize: float, bbox: fitz.Rect) -> int:
+    return max(1, int(bbox.height / (fontsize * 1.3)))
+
+
+def _fits_box(fontfile: Path, fontsize: float, bbox: fitz.Rect, text: str) -> bool:
+    font = fitz.Font(fontfile=str(fontfile))
+    return len(_wrap_lines(font, fontsize, bbox.width, text)) <= _max_lines(fontsize, bbox)
+
+
+def _fit_to_box(fontfile: Path, fontsize: float, bbox: fitz.Rect, text: str) -> str:
+    """Shrinks `text` (by whole sentences first, then hard truncation) until
+    it wraps to no more lines than `bbox` has room for -- SUMMARY_MAX_CHARS
+    caps total length, but a box's actual capacity depends on how many
+    CHARACTERS PER LINE its width allows, which varies with the font and the
+    words themselves. Confirmed live: a rewritten paragraph well under the
+    character cap still wrapped to one more line than the original occupied
+    and visually collided with whatever followed it on the page -- the same
+    "never trust the prompt/an estimate alone, verify against the real
+    rendering" principle as everywhere else in this module.
+
+    Only for the summary paragraph -- shortening BY WHOLE SENTENCES is a
+    reasonable thing to ask of prose. It is NOT used for a skill-line edit:
+    cutting a keyword/skill name down to fit doesn't produce a shorter
+    skill, it produces a mangled fragment (see _tailor_pdf_text's phase-1
+    loop, which drops a skill edit that doesn't fit instead of ever calling
+    this). Returns the original text unchanged if it already fits, so this
+    is a no-op in the common case."""
+    font = fitz.Font(fontfile=str(fontfile))
+    max_lines = _max_lines(fontsize, bbox)
+    if len(_wrap_lines(font, fontsize, bbox.width, text)) <= max_lines:
+        return text
+    shrunk = text
+    for target in (400, 300, 220, 160, 110, 70):
+        shrunk = _truncate_to_sentence(text, target)
+        if len(_wrap_lines(font, fontsize, bbox.width, shrunk)) <= max_lines:
+            return shrunk
+    return shrunk  # smallest attempted -- still too long is better than an infinite loop
+
+
 def _wrap_and_insert(page, bbox: fitz.Rect, text: str, fontfile: Path, fontsize: float, color: tuple) -> None:
     """Registers the font and inserts the text -- must run AFTER any
     redaction on this page (see _pick_font's docstring)."""
@@ -270,20 +360,7 @@ def _wrap_and_insert(page, bbox: fitz.Rect, text: str, fontfile: Path, fontsize:
     fontname = f"cvtailor-{uuid.uuid4().hex[:8]}"
     page.insert_font(fontname=fontname, fontfile=str(fontfile))
 
-    # measuring against the exact loaded font object is what actually
-    # matters here -- page.get_text_length() only has accurate metrics for
-    # the base-14/CJK built-ins, not an arbitrary embedded or bundled font.
-    words = text.split(" ")
-    lines, current = [], ""
-    for w in words:
-        trial = (current + " " + w).strip()
-        if font.text_length(trial, fontsize) <= bbox.width:
-            current = trial
-        else:
-            lines.append(current)
-            current = w
-    if current:
-        lines.append(current)
+    lines = _wrap_lines(font, fontsize, bbox.width, text)
     line_height = fontsize * 1.3
     y = bbox.y0 + fontsize * 0.9
     for line in lines:
@@ -291,53 +368,56 @@ def _wrap_and_insert(page, bbox: fitz.Rect, text: str, fontfile: Path, fontsize:
         y += line_height
 
 
-def _find_summary_paragraph(blocks: list[dict]) -> list[dict] | None:
-    """Groups consecutive, vertically-adjacent, same-column blocks into runs
-    and returns the first one that reads as actual prose -- deliberately
-    NOT "the one block over N characters" on its own, because block
-    granularity isn't consistent across CV generators: on some files each
-    visual LINE comes back as its own PyMuPDF block, so the paragraph only
-    shows up once several get run together; on others (confirmed on a real
-    Canva-style export) the whole paragraph is already one block with its
-    lines pre-joined. Requiring 2+ blocks to accept a run handled the first
-    case but silently discarded the second -- a single-block paragraph never
-    flushed, so the scan fell through to the next thing that happened to
-    look like multi-line prose (on that real file: the address/phone/email
-    block under "contactez-moi"), and that's what got overwritten instead.
-    Length alone is the right test in both cases.
+LOCATE_SUMMARY_LINES_PROMPT = """This is a candidate's CV, extracted as numbered lines (the numbers are
+only for you to reference back -- they aren't part of the actual CV):
 
-    Starting a run needs a real prose-looking line (several words, not
-    all-caps, so a short label like "PROFIL" can't kick one off), but once
-    a run is going, a short line still EXTENDS it (a paragraph's last
-    wrapped line is often just two or three words -- "aux détails." --
-    excluding it here would leave it un-redacted and orphaned below the
-    tailored text). Only an all-caps heading (a new section starting) or a
-    real gap in position ends a run."""
-    ordered = sorted(blocks, key=lambda b: (b["bbox"][0] > 250, b["bbox"][1]))
-    run: list[dict] = []
+{numbered_lines}
 
-    def flush() -> list[dict] | None:
-        combined = " ".join(r["text"] for r in run)
-        return run if len(combined) > 80 else None
+Find the professional summary/profile paragraph: the short introductory blurb about the
+candidate, in full sentences, usually near the top. NOT its section heading if that heading
+sits on its own line, NOT a bullet list, NOT the skills/experience/education sections.
 
-    for b in ordered:
-        text = b["text"]
-        starts_prose = len(text.split()) >= 4 and not text.isupper()
-        continues = bool(run) and not text.isupper() and \
-            abs(b["bbox"][0] - run[-1]["bbox"][0]) <= 5 and b["bbox"][1] - run[-1]["bbox"][3] <= 20
-        if continues:
-            run.append(b)
-        elif starts_prose:
-            found = flush()
-            if found:
-                return found
-            run = [b]
-        else:
-            found = flush()
-            if found:
-                return found
-            run = []
-    return flush()
+Reply with ONLY JSON: {{"start_line": <int>, "end_line": <int>}} -- inclusive, exact line numbers
+from the list above, covering only that paragraph's own lines. If there's no such paragraph on
+this CV, reply {{"start_line": null, "end_line": null}}."""
+
+# A genuine summary paragraph is always short -- a wider range from the LLM
+# almost certainly means it swept up more than just that paragraph (a
+# section heading merged into the same PyMuPDF block/run as its own content
+# is exactly what fooled the previous, layout-only heuristic here into
+# grabbing the entire rest of the CV, confirmed live -- see git history).
+# Checked programmatically rather than trusted from the prompt alone, same
+# principle as SUMMARY_MAX_CHARS below: a bad range must never reach
+# redaction.
+MAX_SUMMARY_LINES = 12
+
+
+def _looks_like_heading(text: str) -> bool:
+    text = text.strip()
+    return bool(text) and text.isupper() and len(text.split()) <= 4
+
+
+def _locate_summary_lines(lines: list[dict]) -> tuple[int, int] | None:
+    """Where the actual summary paragraph is, asked of the LLM instead of
+    inferred from block/gap/alignment heuristics: reading the CV like a
+    human generalizes to whatever layout a given user's own CV happens to
+    use, rather than another position-based rule tuned against one example
+    CV and broken by the next one. Validated below regardless -- a
+    hallucinated or over-wide range must never reach redaction."""
+    numbered = "\n".join(f"[{i}] {ln['text']}" for i, ln in enumerate(lines))
+    try:
+        result = chat_json(LOCATE_SUMMARY_LINES_PROMPT.format(numbered_lines=numbered))
+        start, end = result.get("start_line"), result.get("end_line")
+        if start is None or end is None:
+            return None
+        start, end = int(start), int(end)
+    except Exception:
+        return None
+    if not (0 <= start <= end < len(lines)) or end - start >= MAX_SUMMARY_LINES:
+        return None
+    if any(_looks_like_heading(ln["text"]) for ln in lines[start:end + 1]):
+        return None  # the range itself reads as spanning into a heading -- reject, don't risk it
+    return start, end
 
 
 def _tailor_pdf_text(doc: fitz.Document, profile: dict, title: str, description: str) -> None:
@@ -349,97 +429,164 @@ def _tailor_pdf_text(doc: fitz.Document, profile: dict, title: str, description:
     apply_redactions() rebuilds the page's whole content stream and
     corrupts text inserted by an earlier one, not just breaks its own font."""
     page = doc[0]
-    blocks = _text_blocks(page)
     edits: list[dict] = []  # each: bbox, new_text, spans
 
-    run = _find_summary_paragraph(blocks)
-    if run:
-        summary_original = " ".join(b["text"] for b in run)
-        x0 = min(b["bbox"][0] for b in run)
-        y0 = min(b["bbox"][1] for b in run)
-        x1 = max(b["bbox"][2] for b in run)
-        y1 = max(b["bbox"][3] for b in run)
+    lines = _page_lines(page)
+    located = _locate_summary_lines(lines)
+    if located:
+        start, end = located
+        run = lines[start:end + 1]
+        summary_original = " ".join(ln["text"] for ln in run)
+        x0 = min(ln["bbox"][0] for ln in run)
+        x1 = max(ln["bbox"][2] for ln in run)
+        y1 = max(ln["bbox"][3] for ln in run)
+        # y0: apply_redactions() removes a text span if the redaction rect
+        # intersects it AT ALL, not just the pixels inside it -- and a real
+        # PDF's own line bboxes routinely overlap their neighbor's by a
+        # pixel or so (font-metric padding, confirmed live), so padding
+        # upward the way the top-of-column case safely can risks deleting
+        # the untouched line right above (a heading, most often) instead of
+        # just the paragraph being replaced. Split the gap with that line
+        # when there is one in the same column; only pad outward at the
+        # very top of a column, where there's nothing above to protect.
+        prev = lines[start - 1] if start > 0 else None
+        if prev is not None and abs(prev["bbox"][0] - run[0]["bbox"][0]) <= 5:
+            y0 = (prev["bbox"][3] + run[0]["bbox"][1]) / 2
+        else:
+            y0 = run[0]["bbox"][1] - 2
         new_summary = _tailor_summary_text(summary_original, profile, title, description)
         if new_summary != summary_original:
             edits.append({
-                "bbox": fitz.Rect(x0 - 1, y0 - 2, x1 + 1, y1 + 2),
-                "text": new_summary, "spans": run[0]["spans"],
+                "bbox": fitz.Rect(x0 - 1, y0, x1 + 1, y1 + 2),
+                "text": new_summary, "spans": run[0]["spans"], "truncatable": True,
             })
 
     # skill lines: swap the text of each currently-visible skill line for a
     # better-matching real skill the candidate has but that isn't shown yet
     # -- never touching count/position/formatting, one line in, one line out.
-    skill_blocks = _find_skill_section_blocks(blocks)
-    visible_skills = [b["text"] for b in skill_blocks]
+    # truncatable=False: unlike the summary paragraph, a skill name that
+    # doesn't fit on its one line can't be shortened into a sensible
+    # shorter skill -- the phase-1 loop below drops the swap entirely rather
+    # than inserting a mangled fragment or letting it overflow onto whatever
+    # skill line comes next (confirmed live: "Négociation immobilière"
+    # replacing the shorter "Estimation de biens" wrapped to a second line
+    # and visibly overlapped the skill line below it).
+    skill_groups = _locate_skill_lines(lines)
+    visible_skills = [" ".join(lines[i]["text"] for i in range(s, e + 1)) for s, e in skill_groups]
     hidden_picks = _pick_hidden_skills(visible_skills, profile.get("skills", []), title, description,
                                         max_picks=min(2, len(visible_skills)))
-    for old_skill, new_skill in zip(visible_skills, hidden_picks):
-        block = next(b for b in skill_blocks if b["text"] == old_skill)
-        edits.append({"bbox": fitz.Rect(*block["bbox"]), "text": new_skill, "spans": block["spans"]})
+    for (s, e), new_skill in zip(skill_groups, hidden_picks):
+        group = lines[s:e + 1]
+        bbox = fitz.Rect(
+            min(ln["bbox"][0] for ln in group), min(ln["bbox"][1] for ln in group),
+            max(ln["bbox"][2] for ln in group), max(ln["bbox"][3] for ln in group),
+        )
+        edits.append({"bbox": bbox, "text": new_skill, "spans": group[0]["spans"], "truncatable": False})
 
     if not edits:
         return
 
-    # phase 1: decide fonts/backgrounds and redact everything, from the
-    # page's original state
+    # phase 1: decide fonts/backgrounds, drop anything that won't fit its
+    # box, THEN redact everything that's left -- from the page's original
+    # state throughout, nothing here has touched the page yet.
+    resolved = []
     for e in edits:
+        fontfile, fontsize, color = _pick_font(page, e["spans"], e["text"])
+        if e["truncatable"]:
+            text = _fit_to_box(fontfile, fontsize, e["bbox"], e["text"])
+        elif _fits_box(fontfile, fontsize, e["bbox"], e["text"]):
+            text = e["text"]
+        else:
+            if FONTS_DIR not in fontfile.parents:
+                shutil.rmtree(fontfile.parent, ignore_errors=True)
+            continue  # doesn't fit and can't be shortened sensibly -- leave this one untouched
+        resolved.append({**e, "text": text, "fontfile": fontfile, "fontsize": fontsize, "color": color})
+
+    for e in resolved:
         e["bg"] = _sample_background(page, e["bbox"])
-        e["fontfile"], e["fontsize"], e["color"] = _pick_font(page, e["spans"], e["text"])
         page.add_redact_annot(e["bbox"], fill=tuple(c / 255 for c in e["bg"]))
-    page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
+    if resolved:
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
 
     # phase 2: register fonts and insert all the new text, only now
-    for e in edits:
+    for e in resolved:
         _wrap_and_insert(page, e["bbox"], e["text"], e["fontfile"], e["fontsize"], e["color"])
 
     # Clean up any per-edit temp dir _pick_font extracted an embedded font
     # into (kept alive until _wrap_and_insert read it just above) -- never
     # the bundled Montserrat fallback, which lives under FONTS_DIR.
-    for e in edits:
+    for e in resolved:
         if FONTS_DIR not in e["fontfile"].parents:
             shutil.rmtree(e["fontfile"].parent, ignore_errors=True)
 
 
-_SKILL_HEADER_WORDS = ("competence", "competences", "skill", "skills", "aptitude", "aptitudes")
+LOCATE_SKILLS_PROMPT = """This is a candidate's CV, extracted as numbered lines (the numbers are
+only for you to reference back -- they aren't part of the actual CV):
+
+{numbered_lines}
+
+Find the skills/competencies list, IF each individual skill has its own dedicated spot (its own
+bullet, line, or pill) that could be swapped for a different single skill without touching
+anything else. Some entries wrap onto more than one line -- group those together as ONE entry.
+
+Do NOT match a list where several skills are run together separated by commas on the same
+line(s) under one category label (e.g. "Langages: Python, C, Java" or "IA & LLM -- LangChain,
+LangGraph, DSPy...") -- there's no single item to isolate there, replacing the whole line would
+silently delete every other skill it lists. Reply null for that case.
+
+Reply with ONLY JSON: {{"skills": [[start_line, end_line], ...]}} -- one [start_line, end_line]
+pair per entry (inclusive line numbers from the list above, a single-line entry is [n, n]), in
+the order they appear, EXCLUDING the section's own heading line. If there's no such list on this
+CV (including the comma-separated case above), reply {{"skills": null}}."""
+
+MAX_SKILL_ENTRIES = 30
+MAX_SKILL_ENTRY_LINES = 3
 
 
-def _is_skill_header(text: str) -> bool:
-    # CV section headers are routinely letter-spaced ("C O M P É T E N C E S"),
-    # so the keyword check has to run on the whitespace-stripped text, not
-    # the raw one.
-    if not text.isupper():
-        return False
-    squashed = normalize_text(text).replace(" ", "")
-    return any(word in squashed for word in _SKILL_HEADER_WORDS)
-
-
-def _find_skill_section_blocks(blocks: list[dict]) -> list[dict]:
-    """Anchored on an actual "skills"/"compétences"-type section header,
-    not just "looks short like the others" -- an earlier, width-only
-    heuristic here matched the candidate's own name, address, and dates as
-    "skill lines" on a real CV (confirmed directly), which would have
-    overwritten the wrong text entirely. Collects the short, single-line,
-    non-header blocks in the same column right after that header, stopping
-    at the next all-caps header or a real gap in position."""
-    ordered = sorted(blocks, key=lambda b: (b["bbox"][0] > 250, b["bbox"][1]))
-    header_idx = next((i for i, b in enumerate(ordered) if _is_skill_header(b["text"])), None)
-    if header_idx is None:
+def _locate_skill_lines(lines: list[dict]) -> list[tuple[int, int]]:
+    """LLM-driven replacement for a position/case heuristic that anchored on
+    an all-caps header then swept short, single-line blocks after it --
+    confirmed live on a real CV that a skill entry wrapping onto a second
+    line (PyMuPDF gives each wrapped LINE its own block on some CV exports,
+    same underlying inconsistency _locate_summary_lines's docstring
+    describes) came back as two independent "skills", one swap landing on
+    each fragment -- two unrelated replacement skills then rendered as one
+    garbled, overlapping bullet. Grouping wrapped lines into one entry needs
+    the model to actually read the list, not just measure gaps -- validated
+    programmatically below regardless, same as everywhere else in this
+    module: entries must be short, non-overlapping, in bounds, and none can
+    read as a heading, or the whole result is rejected rather than risking
+    a bad group."""
+    numbered = "\n".join(f"[{i}] {ln['text']}" for i, ln in enumerate(lines))
+    try:
+        result = chat_json(LOCATE_SKILLS_PROMPT.format(numbered_lines=numbered))
+        raw = result.get("skills")
+        if not raw:
+            return []
+        pairs = [(int(p[0]), int(p[1])) for p in raw]
+    except Exception:
         return []
 
-    header = ordered[header_idx]
-    result = []
-    prev = header
-    for b in ordered[header_idx + 1:]:
-        if (b["bbox"][0] > 250) != (header["bbox"][0] > 250):
-            break  # crossed into a different column
-        if b["text"].isupper():
-            break  # next section header
-        if b["bbox"][1] - prev["bbox"][3] > 25:
-            break  # real vertical gap -- likely a different block entirely
-        if 2 <= len(b["text"]) <= 40 and "\n" not in b["text"]:
-            result.append(b)
-        prev = b
-    return result
+    if len(pairs) > MAX_SKILL_ENTRIES:
+        return []
+    prev_end = -1
+    for start, end in pairs:
+        if not (prev_end < start <= end < len(lines)) or end - start >= MAX_SKILL_ENTRY_LINES:
+            return []
+        entry_text = " ".join(lines[i]["text"] for i in range(start, end + 1))
+        if any(_looks_like_heading(lines[i]["text"]) for i in range(start, end + 1)):
+            return []
+        # A comma/semicolon is the clearest sign this "entry" is actually
+        # several skills run together under one category label, not one
+        # atomic skill -- rejected here even though the prompt already asks
+        # for this, same "don't trust the model alone" reasoning as
+        # everywhere else: confirmed live, a category line like "IA & LLM --
+        # LangChain, LangGraph, DSPy..." still came back once as a single
+        # "entry" and a swap silently deleted every skill it listed but one.
+        if "," in entry_text or ";" in entry_text:
+            return []
+        prev_end = end
+    return pairs
 
 
 # ---------------------------------------------------------------------------

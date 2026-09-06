@@ -127,6 +127,30 @@ def unarchive_cover_letter(conn: Connection, offer_id: int) -> None:
     _unarchive_column(conn, offer_id, "cv_path")
 
 
+def exclude_offer(conn: Connection, offer_id: int) -> bool:
+    """Marks an offer excluded and deletes its outputs/{offer_id}/ folder
+    (a draft letter/CV for an offer you're not pursuing is dead weight,
+    unlike archive_cover_letter's keep-but-relocate for 'applied') and its
+    `applications` row, if any -- safe to drop outright rather than archive:
+    the "already applied" guard below means this never runs on an offer that
+    was actually sent, only ever a 'draft'/unscored/unactioned one. Returns
+    False without changing anything if the offer doesn't exist or is already
+    applied/excluded -- callers already have their own row fetched to build
+    an "already X" message from, so this only reports the boolean."""
+    row = conn.execute("SELECT status FROM offers WHERE id = ?", (offer_id,)).fetchone()
+    if not row or row["status"] in ("applied", "excluded"):
+        return False
+    conn.execute("UPDATE offers SET status = 'excluded' WHERE id = ?", (offer_id,))
+    conn.execute("DELETE FROM applications WHERE offer_id = ?", (offer_id,))
+
+    import shutil
+    from tools.documents import offer_output_dir
+    out_dir = offer_output_dir(offer_id)
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    return True
+
+
 def company_health_check(conn: Connection, offer_id: int, company: str | None) -> dict | None:
     """Pappers health signals (verifier_sante) for an offer's company,
     cached directly on the `offers` row -- same spirit as company_contacts

@@ -733,7 +733,7 @@ def exclure_offre(offer_id: int, raison: str = "") -> str:
             return f"#{offer_id} is already marked applied -- undo that first with annuler_postule if you want to exclude it."
         if row["status"] == "excluded":
             return f"#{offer_id} is already excluded."
-        conn.execute("UPDATE offers SET status = 'excluded' WHERE id = ?", (offer_id,))
+        common.exclude_offer(conn, offer_id)
     detail = f" ({raison})" if raison else ""
     return f"#{offer_id} excluded: {row['title']} -- {row['company']}{detail}."
 

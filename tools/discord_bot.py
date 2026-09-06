@@ -243,7 +243,7 @@ class ExcludeButton(discord.ui.Button):
                 already = "applied" if row["status"] == "applied" else "excluded"
                 await interaction.response.send_message(f"#{self.offer_id} is already {already}.", ephemeral=True)
                 return
-            conn.execute("UPDATE offers SET status = 'excluded' WHERE id = ?", (self.offer_id,))
+            common.exclude_offer(conn, self.offer_id)
         if self.view is not None:
             _disable_offer_buttons(self.view, self.offer_id)
             await interaction.response.edit_message(view=self.view)
@@ -807,7 +807,7 @@ async def exclude(interaction: discord.Interaction, offer_id: int, reason: str =
             )
             await interaction.response.send_message(embed=embed)
             return
-        conn.execute("UPDATE offers SET status = 'excluded' WHERE id = ?", (offer_id,))
+        common.exclude_offer(conn, offer_id)
     detail = f" ({reason})" if reason else ""
     embed = base_embed(
         "Posting excluded", color=COLOR_ERROR,

@@ -114,7 +114,7 @@ on by filling in its own section of `.env`; see
 
 One codebase -- no separate Windows/macOS/Linux build to pick between.
 Everything here is plain Python plus libraries that ship native builds for
-all three (Ollama, Textual, WeasyPrint, LibreOffice). Desktop notifications
+all three (Ollama, Textual, Typst, LibreOffice). Desktop notifications
 and the terminal UI's "open file" buttons already detect the OS and use the
 right mechanism underneath (`notify-send`/`osascript`/a PowerShell balloon
 tip; `xdg-open`/`open`/`os.startfile`) -- nothing to configure there.
@@ -126,7 +126,6 @@ What actually differs per OS:
 | Base install | `./setup.sh` | `./setup.sh` | `.\setup.ps1` |
 | Terminal for `cli.py` | any | Terminal.app, iTerm2 | Windows Terminal (recommended over legacy `cmd.exe`) |
 | Run continuously in the background | systemd, see [below](#running-it-continuously) | launchd, see [below](#running-it-continuously) | Task Scheduler, see [below](#running-it-continuously) |
-| WeasyPrint's system libraries (Pango/Cairo) | usually already present, else one `apt`/`dnf` line | `brew install pango` | a one-time GTK3 runtime installer -- see [WeasyPrint's own docs](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#windows) |
 
 `.docx` CV tailoring additionally needs
 [LibreOffice](https://www.libreoffice.org/) (`soffice` on `PATH`) on any of
@@ -580,6 +579,24 @@ of 18 real headlines checked while building this, 6 turned out to be a
 specific company with a real board on one of these platforms, the rest were
 either opinion pieces/retrospectives (no specific company) or a company on
 none of them.
+
+## Cover letter design
+
+Cover letters render through [Typst](https://typst.app/), not the letter
+text alone -- `templates/lettre.typ` (bundled,
+[@preview/modernpro-coverletter](https://typst.app/universe/package/modernpro-coverletter))
+is the default for anyone who clones this repo and never touches this
+setting, and lays out your name/role/contacts, the company/offer as the
+recipient block, and the letter body underneath. Point
+`COVER_LETTER_TEMPLATE_PATH` (.env) at your own `.typ` file to use a
+different design instead -- it receives the same `hobot_name`/`hobot_role`/
+`hobot_address`/`hobot_contacts`/`hobot_recipient_name`/
+`hobot_recipient_address`/`hobot_subject` bindings (see the comment at the
+top of `templates/lettre.typ`) and the letter body gets appended as plain
+paragraphs below it either way, whatever the template itself looks like.
+`profile.contacts` picks up `GMAIL_SEND_ACCOUNT` automatically if you've set
+up [email monitoring](#email-monitoring-optional); role/location come from
+your CV profile (`/profile`).
 
 ## CV tailoring (optional)
 
