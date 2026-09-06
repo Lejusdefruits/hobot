@@ -167,7 +167,7 @@ def company_label(company: str | None) -> str:
     return company or "(company withheld)"
 
 
-SPONTANEOUS_LEAD_SOURCES = ("lba_recruiter", "labonneboite", "ats_lead")
+SPONTANEOUS_LEAD_SOURCES = ("lba_recruiter", "ats_lead")
 
 # Readable labels for the `source` column -- used by /sources, /log, and
 # strategie_recherche so a raw technical key (e.g. "jobspy") never leaks into
@@ -179,7 +179,6 @@ SOURCE_LABELS = {
     "jobspy_indeed": "JobSpy (Indeed)",
     "jobspy_linkedin": "JobSpy (LinkedIn)",
     "francetravail": "France Travail",
-    "labonneboite": "La Bonne Boite (spontaneous-application lead)",
     "ats": "ATS watchlist (Greenhouse/Ashby/Lever/SmartRecruiters/Workable/Rippling/Workday/SuccessFactors)",
     "ats_greenhouse": "ATS watchlist (Greenhouse)",
     "ats_ashby": "ATS watchlist (Ashby)",
@@ -220,8 +219,8 @@ STATUS_LABELS = {
 def offer_type_label(source: str | None) -> str:
     """Distinguishes a real published listing from a spontaneous-application
     lead (a company flagged as a potential employer, with no actual listing
-    behind it -- see tools/sources_lba.py and tools/sources_labonneboite.py)
-    -- so it's never left to guesswork from a free-text title."""
+    behind it -- see tools/sources_lba.py) -- so it's never left to
+    guesswork from a free-text title."""
     return "Spontaneous-application lead (no listing published)" if source in SPONTANEOUS_LEAD_SOURCES else "Published listing"
 
 

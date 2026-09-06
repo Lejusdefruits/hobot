@@ -17,7 +17,16 @@ from tools import common, sources_hunter, sources_pappers, sources_snov, web_sea
 _DOMAIN_SKIP = ("linkedin.com", "societe.com", "pappers.fr", "indeed.com", "google.com",
                 "facebook.com", "welcometothejungle.com", "glassdoor", "gouv.fr",
                 "pagesjaunes.fr", "pagesblanches", "annuaire-entreprises", "verif.com",
-                "infogreffe.fr", "manageo.fr", "kompass.com")
+                "infogreffe.fr", "manageo.fr", "kompass.com",
+                # Reference/review sites that legitimately write ABOUT a company
+                # under its own name (so the distinctive-word check right below
+                # doesn't catch them) without BEING that company -- caught live
+                # with a real search: "Airwallex" resolved to its own Wikipedia
+                # article, "Skello" to its Trustpilot review page, and Hunter/Snov
+                # then returned Wikipedia/Trustpilot staff as if they worked there.
+                "wikipedia.org", "trustpilot.com", "crunchbase.com", "bloomberg.com",
+                "forbes.com", "builtin.com", "owler.com", "pitchbook.com", "craft.co",
+                "zoominfo.com", "comparably.com", "teamblind.com", "greatplacetowork.com")
 
 
 def recherche_contact(entreprise: str, ville: str = "", offer_id: int | None = None) -> dict:
@@ -65,13 +74,24 @@ def recherche_contact(entreprise: str, ville: str = "", offer_id: int | None = N
                       "or the API isn't configured).")
 
     # Identify the official site (to target Hunter.io and the follow-up web
-    # search, never to derive/guess an email address ourselves). Anti-homonym
-    # guard: a generic company name can surface a completely unrelated
-    # business as the top result just because it shares one word of the name
-    # -- require a distinctive word (>=4 letters) from the company name to
-    # appear in the result's title/domain, not just "the first one that
-    # isn't a known directory".
+    # search, never to derive/guess an email address ourselves). Two guards,
+    # not one -- a title mentioning the company is not the same as the
+    # company's own domain:
+    # 1. Anti-homonym: a generic company name can surface a completely
+    #    unrelated business as the top result just because it shares one word
+    #    of the name -- require a distinctive word (>=4 letters) from the
+    #    company name to appear in the result's title/domain, not just "the
+    #    first one that isn't a known directory".
+    # 2. Anti-third-party: a page can legitimately be ABOUT the company (so it
+    #    passes guard 1) without BEING the company -- a news article, a VC's
+    #    portfolio page, an industry directory. Caught live with real
+    #    searches even after extending _DOMAIN_SKIP one bad domain at a time
+    #    (Sifted, a VC fund's own site, and a space-industry directory all
+    #    slipped through with distinct, previously-unseen domains): the
+    #    domain's own name has to actually overlap with the company's name,
+    #    not just the page's title.
     distinctive_words = [common.normalize_text(w) for w in entreprise.split() if len(w) >= 4]
+    company_slug = common.normalize_text(entreprise).replace(" ", "")
     domain = None
     for r in web_search.search(f"{entreprise} {ville} official site".strip()):
         url = r.get("url") or ""
@@ -81,9 +101,14 @@ def recherche_contact(entreprise: str, ville: str = "", offer_id: int | None = N
         if distinctive_words and not any(word in haystack for word in distinctive_words):
             continue
         m = re.search(r"https?://(?:www\.)?([\w.-]+)", url)
-        if m:
-            domain = m.group(1)
-            break
+        if not m:
+            continue
+        candidate = m.group(1)
+        domain_root = candidate.split(".")[-2] if candidate.count(".") >= 1 else candidate
+        if company_slug and domain_root not in company_slug and company_slug not in domain_root:
+            continue
+        domain = candidate
+        break
 
     if domain:
         lines.append(f"\nOfficial site identified: {domain}")

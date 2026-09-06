@@ -425,6 +425,10 @@ def start() -> None:
     asyncio.run(_run())
 
 
+DISCORD_LOGIN_RETRIES = 5
+DISCORD_LOGIN_RETRY_SECONDS = 15
+
+
 async def _run() -> None:
     """Discord is optional to start the process (see
     tools/discord_bot.py::DISCORD_ENABLED) -- it doesn't have to be
@@ -445,8 +449,28 @@ async def _run() -> None:
         return
 
     from tools.discord_bot import TOKEN, client
-    async with client:
-        await client.start(TOKEN)
+
+    # On boot/wake, systemd's After=network-online.target isn't a hard
+    # guarantee -- observed live: the unit starts before DNS actually
+    # resolves, client.start() raises straight out of login() (e.g.
+    # aiohttp's ClientConnectorDNSError), and with nothing catching it here
+    # that used to kill the whole process (scheduler included) over a
+    # connectivity blip that clears up within seconds. Retried in-process
+    # instead of leaning on systemd's Restart=on-failure for this, since a
+    # crash-restart also drops and re-schedules every APScheduler job.
+    for attempt in range(1, DISCORD_LOGIN_RETRIES + 1):
+        try:
+            async with client:
+                await client.start(TOKEN)
+            return
+        except Exception:
+            if attempt == DISCORD_LOGIN_RETRIES:
+                raise
+            log.warning(
+                "Discord login failed (attempt %d/%d), retrying in %ds:\n%s",
+                attempt, DISCORD_LOGIN_RETRIES, DISCORD_LOGIN_RETRY_SECONDS, traceback.format_exc(),
+            )
+            await asyncio.sleep(DISCORD_LOGIN_RETRY_SECONDS)
 
 
 if __name__ == "__main__":

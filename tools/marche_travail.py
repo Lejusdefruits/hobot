@@ -5,9 +5,9 @@ keyword apart from a genuinely tight market for that profession/zone.
 
 The exact OAuth2 scope name for this API could not be reliably found (not
 from the public docs, nor by guessing against the real API -- several dozen
-variants tried, all rejected as invalid_scope). Unlike La Bonne Boite (a
-recognized scope, access just not approved yet -- insufficient_scope), here
-the scope itself isn't recognized at all: the exact name is visible via the
+variants tried, all rejected as invalid_scope, distinct from a recognized-
+but-not-yet-approved scope which France Travail reports as
+insufficient_scope instead). The exact name is visible via the
 "eye" icon on the "Marche du travail v1" line at https://francetravail.io
 (the project's account there), to set in FRANCE_TRAVAIL_MARCHE_SCOPE (.env)
 once found -- as long as that variable is empty, tension_indicator() always

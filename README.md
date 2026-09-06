@@ -191,9 +191,8 @@ stays off, nothing breaks.
 | French source, apprenticeship only | No | La Bonne Alternance — **France only**, free |
 | French source, any contract type (filterable) | No | France Travail "Offres d'emploi v2" — **France only**, free |
 | General-purpose, multi-country source | No | Adzuna — free up to 2500 calls/month |
-| Spontaneous-application leads (France) | No | La Bonne Boite — **needs manual approval from France Travail**, not active on credentials alone |
 | Tech-company career pages (any country) | No | Greenhouse/Ashby/Lever/SmartRecruiters/Workable/Rippling/Workday/SuccessFactors — free, but needs `ATS_WATCHLIST` (or chat) to name companies, no keyword search |
-| Funding-news leads for the ATS watchlist | No | Nothing extra -- free RSS, proposes companies, never adds one on its own |
+| Funding-news leads for the ATS watchlist | No | Nothing extra -- free RSS, adds a match to the watchlist on its own |
 | Mail monitoring (reading + draft replies) | No | One or more Gmail accounts |
 | Web search for sharper letters/contacts | No | Tavily (free up to 1000/month) or self-hosted SearXNG (docker, free) |
 | Company contacts (legal representatives) | No | Pappers — **France only** |
@@ -442,8 +441,8 @@ target roles: before each scheduled run, the AI picks up to two keywords per
 source, informed by that source's own recent result history (a keyword that's
 been stuck at 0-2 results for several runs gets reformulated instead of
 retried forever). `/strategy` (Discord) or the terminal UI's Reports tab
-shows what's actually in use and why. La Bonne Alternance and La Bonne Boite
-are unaffected -- they search by ROME code, not free text (see below).
+shows what's actually in use and why. La Bonne Alternance is unaffected --
+it searches by ROME code, not free text (see below).
 
 Every newly-found posting also passes a cheap, free relevance pre-filter
 before it's ever saved (never re-applied to what's already in the
@@ -487,13 +486,6 @@ them in `FRANCE_TRAVAIL_CLIENT_ID` and `FRANCE_TRAVAIL_CLIENT_SECRET`. To
 filter on a specific contract type (apprenticeship, say), set
 `FRANCE_TRAVAIL_NATURE_CONTRAT=E1,E2`; left empty, the search covers every
 contract type.
-
-While subscribing you'll also see "La Bonne Boite v2" (spontaneous-application
-leads: companies flagged as likely hiring but with no published listing). The
-code is ready and reuses the same client id/secret, but France Travail
-requires a manual approval on their end on top of the subscription for this
-particular API; until it's granted, this source just stays inactive without
-blocking anything else (the bot handles that on its own, no error surfaces).
 
 ## ATS watchlist (optional)
 
@@ -541,8 +533,8 @@ so `platform`/`slug` must be given explicitly for these two:
 
 `surveiller_entreprise` does one more thing on success: it also creates a
 spontaneous-application lead for that company (same idea as La Bonne
-Alternance/La Bonne Boite's recruiter leads -- a placeholder posting for a
-company with no open role yet, tagged `ats_lead`) and immediately looks up a
+Alternance's recruiter leads -- a placeholder posting for a company with no
+open role yet, tagged `ats_lead`) and immediately looks up a
 contact for it (Pappers + web search first, Hunter.io/Snov.io only as their
 own existing fallback for a verified email -- same priority order as asking
 for a company's contacts by hand, nothing changed there). The lead shows up
@@ -551,7 +543,7 @@ run for scoring, and an automatic cover letter if it scores well -- nothing
 extra to do for that part.
 
 Any spontaneous-application lead that later scores well during a scheduled
-run (from any of the three sources that produce them, not just this one)
+run (from either of the two sources that produce them, not just this one)
 gets the same automatic contact lookup at that point if it doesn't have one
 yet -- there's no listing to reply to for this offer type, so a contact is
 the only concrete next step, and it shows up in that run's notification.
@@ -575,11 +567,11 @@ platforms (see [ATS watchlist](#ats-watchlist-optional) above) -- a company
 that just closed a round is a reasonable bet to be hiring soon, even before
 a posting shows up.
 
-A match is **proposed**, never added automatically: a notification (Discord
-and desktop, same as everything else proactive in this project) lists what
-was found, and adding one for real is one message away --
-`"surveille <company>"` through `/ask`, same as adding any other company by
-hand. Nothing here writes to the watchlist on its own.
+A match is added straight away -- same effect as `"surveille <company>"`
+through `/ask` for it (watchlist entry, spontaneous-application lead, contact
+lookup), no confirmation needed. A notification (Discord and desktop, same
+as everything else proactive in this project) lists what was added;
+`retirer_entreprise_suivie` through `/ask` drops one that isn't relevant.
 
 `verifier_actus_levees_de_fonds` (through `/ask`) runs the check on demand
 instead of waiting for its schedule -- slow (an LLM call per candidate
@@ -1005,11 +997,11 @@ core/
   clipboard.py         — reads the real OS clipboard (best-effort, backs the terminal UI's Ctrl+V paste)
 tools/
   sources_jobspy.py   — discovery connector (no key required)
-  sources_lba.py, sources_adzuna.py, sources_francetravail.py,
-  sources_labonneboite.py — French sources (optional, see table above)
+  sources_lba.py, sources_adzuna.py, sources_francetravail.py
+                       — French sources (optional, see table above)
   sources_ats.py      — Greenhouse/Ashby/Lever/SmartRecruiters/Workable/Rippling/Workday/SuccessFactors connector, per-company (optional, see table above)
   sources_funding_news.py — Maddyness/Frenchweb RSS, feeds the ATS watchlist (optional)
-  funding_check.py    — turns a funding headline into a watchlist proposal (optional)
+  funding_check.py    — turns a funding headline into a watched company (optional)
   sources_pappers.py, sources_hunter.py, sources_snov.py — contacts (optional)
   web_search.py       — Tavily, falling back to SearXNG (optional)
   email_tools.py      — IMAP/SMTP (optional)

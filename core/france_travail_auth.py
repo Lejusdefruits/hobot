@@ -1,5 +1,5 @@
 """Shared OAuth2 client_credentials client for the France Travail Connect APIs
-(Offres d'emploi v2, La Bonne Boite v2) -- one identifier/secret pair, a
+(Offres d'emploi v2, Marche du travail v1) -- one identifier/secret pair, a
 different scope per API.
 
 One token per scope, cached in memory until shortly before it expires (France
@@ -7,14 +7,14 @@ Travail tokens last ~1499s) -- same idea as the single shared Ollama client in
 core/llm.py, so a token never gets requested fresh on every call.
 
 Deliberate rate limiting, not just "space things out a bit":
-- Each caller (tools/sources_francetravail.py, sources_labonneboite.py)
+- Each caller (tools/sources_francetravail.py, tools/marche_travail.py)
   declares ITS OWN documented limit (calls/second, with a safety margin) and
   passes it to get(), instead of an internal table keyed by exact scope
   string -- fragile the moment an unknown scope shows up, since the limit
   would then silently never apply.
-- A lock PER SCOPE (_lock_for), not a global one: waiting your turn on La
-  Bonne Boite (2/s, the slowest) must never block a concurrent call to Offres
-  d'emploi (10/s) -- that was a real bug in the first version.
+- A lock PER SCOPE (_lock_for), not a global one: a slow/backed-off scope
+  must never block a concurrent call to a different one sharing the same
+  client id -- that was a real bug in the first version.
 - `time.sleep()` happens AFTER releasing the lock (the slot is reserved under
   the lock, the sleep happens outside it): two concurrent calls on the same
   scope land on distinct slots instead of risking the same one.
@@ -122,9 +122,8 @@ def get(url: str, scope: str, params: dict | None = None, timeout: int = 15,
     `max_calls_per_second` must come from the caller (that specific API's
     documented limit, with margin) -- see the module docstring for why it's
     not inferred from the scope. Leaves the caller to decide what to do with
-    the final status code (e.g. 403 insufficient_scope = access not yet
-    approved by France Travail, the normal state for La Bonne Boite until
-    it's granted)."""
+    the final status code (e.g. 403 insufficient_scope = subscribed but not
+    yet manually approved by France Travail for that API)."""
     _throttle(scope, max_calls_per_second)
     token = get_token(scope)
     resp = requests.get(url, params=params, headers={"Authorization": f"Bearer {token}"}, timeout=timeout)

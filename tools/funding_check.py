@@ -5,21 +5,25 @@ that just closed a round is a reasonable bet to be hiring soon. Runs on its
 own schedule (daemon.py, every FUNDING_CHECK_INTERVAL_DAYS), independent of
 job discovery.
 
-Never adds a company automatically: this only NOTIFIES a candidate (Discord
-+ desktop, via notify_all -- persisted in the notifications table like every
-other proactive notification in this project), the same "propose, don't
-act" pattern preparer_envoi_mail (graphs/chat_agent.py) already uses for a
-real email send. Add one for real with surveiller_entreprise via /ask once
-you've seen the notification, or ignore it if it's not relevant -- nothing
-here writes to ats_watchlist itself.
+Adds a match straight to the watchlist -- same effect as calling
+surveiller_entreprise (graphs/chat_agent.py) by hand for it: a spontaneous-
+application lead gets created and a contact looked up right away, then
+notify_all reports what was added (Discord + desktop, persisted in the
+notifications table like every other proactive notification here). Uses
+tools/contact_research.py directly rather than importing graphs/chat_agent.py
+for rechercher_contacts_entreprise -- same reasoning as contact_research.py's
+own module docstring: this runs from the scheduled pipeline, and chat_agent.py
+builds a whole LangGraph agent + LLM client at import time.
 """
 import logging
 import traceback
 from datetime import datetime
 
-from core.ats_watchlist import list_companies
+from core.ats_watchlist import add_company, list_companies
 from core.db import get_connection
 from core.llm import chat_json
+from tools.common import make_offer
+from tools.contact_research import recherche_contact
 from tools.notify_tools import notify_all
 from tools.sources_ats import resolve_slug
 from tools.sources_funding_news import fetch_funding_candidates
@@ -58,6 +62,32 @@ def _last_check_time() -> datetime | None:
     return datetime.fromisoformat(row["finished_at"])
 
 
+def _add_lead(company: str, platform: str, slug: str, headline: str, link: str) -> bool:
+    """add_company + a placeholder offer + an immediate contact lookup -- the
+    same three steps surveiller_entreprise does by hand, run here for real
+    instead of waiting on a chat command. Returns False on any failure
+    (already watched by the time we get here, no board anymore, etc.)
+    without raising -- one bad candidate must not stop the rest."""
+    ok, _ = add_company(company, platform=platform, slug=slug)
+    if not ok:
+        return False
+    from graphs.discovery_graph import persist_adhoc_offers
+    lead = make_offer(
+        source="ats_lead", external_id=None, title=f"Spontaneous interest -- {company}",
+        company=company, location=None,
+        description=(
+            f"Added to the ATS watchlist automatically after a funding-news mention: "
+            f"\"{headline}\" ({link}). No open posting yet -- its board is checked on "
+            f"every scheduled run; in the meantime this is a spontaneous-application lead."
+        ),
+        url=None,
+    )
+    persisted = persist_adhoc_offers([lead])
+    if persisted:
+        recherche_contact(company, offer_id=persisted[0]["id"])
+    return True
+
+
 def run_funding_check() -> None:
     """Entry point, scheduled by daemon.py. Never raises past this boundary
     -- a failed check must not crash the scheduler, same convention as
@@ -68,7 +98,7 @@ def run_funding_check() -> None:
         candidates = fetch_funding_candidates(since=since)
         already_watched = {c["company"].lower() for c in list_companies()}
 
-        found = []
+        added = []
         seen_companies: set = set()  # the same company can appear in both feeds on one run
         for item in candidates:
             company = _extract_company(item["title"])
@@ -76,30 +106,31 @@ def run_funding_check() -> None:
                 continue
             resolved = resolve_slug(company)
             if not resolved:
-                continue  # no Greenhouse/Ashby/Lever board -- nothing surveiller_entreprise could act on anyway
+                continue  # no Greenhouse/Ashby/Lever board -- nothing to watch
             seen_companies.add(company.lower())
             platform, slug = resolved
-            found.append({"company": company, "platform": platform, "title": item["title"], "link": item["link"]})
+            if _add_lead(company, platform, slug, item["title"], item["link"]):
+                added.append({"company": company, "platform": platform, "title": item["title"]})
 
         with get_connection() as conn:
             conn.execute(
                 "INSERT INTO run_log (run_type, source, finished_at, n_found, n_new) "
                 "VALUES ('funding_check', 'funding_news', datetime('now'), ?, ?)",
-                (len(candidates), len(found)),
+                (len(candidates), len(added)),
             )
 
-        if not found:
-            log.info("funding check: %d funding headline(s) checked, nothing new to propose", len(candidates))
+        if not added:
+            log.info("funding check: %d funding headline(s) checked, nothing new to watch", len(candidates))
             return
 
-        lines = [f"{f['company']} ({f['platform']}) -- {f['title']}" for f in found]
+        lines = [f"{f['company']} ({f['platform']}) -- {f['title']}" for f in added]
         notify_all(
             "hobot -- funding news",
-            "Recently funded, has a Greenhouse/Ashby/Lever board, not on your watchlist yet:\n"
-            + "\n".join(lines)
-            + '\n\nAdd one via chat: "surveille <company>" (surveiller_entreprise).',
+            "Recently funded, now on the ATS watchlist (a spontaneous-application lead "
+            "and its contacts were created too -- retirer_entreprise_suivie in chat "
+            "drops one if it's not relevant):\n" + "\n".join(lines),
             kind="funding",
         )
-        log.info("funding check: proposed %d compan%s", len(found), "y" if len(found) == 1 else "ies")
+        log.info("funding check: added %d compan%s", len(added), "y" if len(added) == 1 else "ies")
     except Exception:
         log.error("funding check failed:\n%s", traceback.format_exc())

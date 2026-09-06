@@ -161,8 +161,8 @@ def lancer_scoring() -> str:
 def strategie_recherche() -> str:
     """Shows the search keyword(s) currently in use for each discovery
     source that takes a free-text query (Adzuna, JobSpy, France Travail --
-    LBA and La Bonne Boite search by a fixed ROME code instead, see
-    LBA_ROME_CODES in graphs/discovery_graph.py), with the result count and
+    LBA searches by a fixed ROME code instead, see LBA_ROME_CODES in
+    graphs/discovery_graph.py), with the result count and
     the AI's own reasoning from its last run. Chosen fresh by
     choose_keywords_node (graphs/discovery_graph.py) before every scheduled
     discovery run, informed by each source's own recent history -- not a
@@ -465,7 +465,7 @@ def surveiller_entreprise(nom_entreprise: str, platform: str = None, slug: str =
     already knows the exact slug for.
 
     On success, also creates a spontaneous-application lead for this company
-    (same idea as La Bonne Alternance/La Bonne Boite's recruiter leads,
+    (same idea as La Bonne Alternance's recruiter leads,
     tools/sources_lba.py: a placeholder posting for a company with no open
     role yet, so there's something real to act on -- mark applied, exclude,
     tailor a CV -- rather than just a name sitting in a list) and looks up a

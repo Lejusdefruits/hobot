@@ -1,23 +1,21 @@
 """discovery_graph -- the offer discovery pipeline.
 
 choose_keywords -> fetch_jobspy / fetch_adzuna / fetch_francetravail (the 3
-free-text sources, gated on choose_keywords) + fetch_lba / fetch_labonneboite /
-fetch_ats (ungated, no keyword involved) (parallel) -> dedupe -> persist_new
--> score -> draft_letters -> log_run.
+free-text sources, gated on choose_keywords) + fetch_lba / fetch_ats
+(ungated, no keyword involved) (parallel) -> dedupe -> persist_new -> score
+-> draft_letters -> log_run.
 
 JobSpy (scraping, no key required, see tools/sources_jobspy.py) is the only
-source active by default. The next four are official French APIs, each
+source active by default. The next three are official French APIs, each
 individually optional (missing key -> the connector returns an empty list,
 the fetch node logs it and moves on): La Bonne Alternance and France Travail
 "Offres d'emploi v2" (apprenticeship, France only), Adzuna (general-purpose,
-multi-country but tuned for France here), La Bonne Boite (spontaneous-
-application leads, access subject to manual approval by France Travail --
-see tools/sources_labonneboite.py). Target cities come from user_profile
-(target_locations), never hardcoded -- see core/profile.py for how that
-profile gets filled in (a CV or free text through chat). La Bonne
-Alternance/La Bonne Boite search by ROME code (LBA_ROME_CODES, .env) rather
-than a free-text keyword: these are fixed-taxonomy APIs, France Travail
-doesn't support free search.
+multi-country but tuned for France here). Target cities come from
+user_profile (target_locations), never hardcoded -- see core/profile.py for
+how that profile gets filled in (a CV or free text through chat). La Bonne
+Alternance searches by ROME code (LBA_ROME_CODES, .env) rather than a
+free-text keyword: it's a fixed-taxonomy API, France Travail doesn't support
+free search.
 
 choose_keywords_node picks the free-text keyword(s) for Adzuna/JobSpy/France
 Travail fresh on every run (KEYWORD_SOURCES) rather than a constant derived
@@ -70,7 +68,7 @@ from core.llm import chat_json
 from core.llm_provider import LLM_PROVIDER
 from tools import (
     sources_adzuna, sources_ats, sources_francetravail, sources_jobspy,
-    sources_labonneboite, sources_lba, web_search,
+    sources_lba, web_search,
 )
 from tools.common import (
     SPONTANEOUS_LEAD_SOURCES, company_health_check, company_label, normalize_text, upsert_application,
@@ -81,19 +79,19 @@ from tools.notify_tools import notify_all
 # Fallback when user_profile.target_locations is empty or contains no city
 # recognized by core/locations.py -- Paris alone (not one more hardcoded
 # city, just the registry's own default). Used by sources that need
-# coordinates/a commune code (LBA, France Travail, La Bonne Boite), not by
-# JobSpy, which accepts any free-text city name.
+# coordinates/a commune code (LBA, France Travail), not by JobSpy, which
+# accepts any free-text city name.
 DEFAULT_TARGET_LOCATIONS = [locations.DEFAULT_LOCATION]
 
-# ROME code(s) for La Bonne Alternance / La Bonne Boite -- fixed taxonomy, not
-# a free-text keyword (see the module docstring). Defaults to IT/software
-# development (M1805); change it in .env for a different target role.
+# ROME code(s) for La Bonne Alternance -- fixed taxonomy, not a free-text
+# keyword (see the module docstring). Defaults to IT/software development
+# (M1805); change it in .env for a different target role.
 LBA_ROME_CODES = os.environ.get("LBA_ROME_CODES", "M1805")
 
 # Sources currently wired into the scheduled graph -- source of truth for
 # /sources (discord_bot.py), which filters on this so a source no longer
 # fetched never shows up there as if it were still active.
-ACTIVE_DISCOVERY_SOURCES = ("jobspy", "lba", "adzuna", "francetravail", "labonneboite", "ats")
+ACTIVE_DISCOVERY_SOURCES = ("jobspy", "lba", "adzuna", "francetravail", "ats")
 
 
 def is_source_configured(source: str) -> bool:
@@ -105,10 +103,8 @@ def is_source_configured(source: str) -> bool:
     surfacing "you forgot to set this up" on its own. /sources and the
     terminal UI's Reports > Sources tab both show this alongside run
     history so that distinction is visible instead of looking identical to
-    "configured but nothing found yet." labonneboite additionally needs a
-    manual France Travail approval on top of the same credentials
-    (README's French job sources section) that can't be checked from
-    config alone -- "configured" here only means the credentials are set."""
+    "configured but nothing found yet." "configured" here only means the
+    credentials are set."""
     if source == "jobspy":
         return True
     if source == "lba":
@@ -117,7 +113,7 @@ def is_source_configured(source: str) -> bool:
     if source == "adzuna":
         from tools.sources_adzuna import APP_ID, APP_KEY
         return bool(APP_ID and APP_KEY)
-    if source in ("francetravail", "labonneboite"):
+    if source == "francetravail":
         from core.france_travail_auth import CLIENT_ID, CLIENT_SECRET
         return bool(CLIENT_ID and CLIENT_SECRET)
     if source == "ats":
@@ -188,8 +184,8 @@ def _log(msg: str) -> None:
 
 
 # Sources whose free-text keyword is chosen by the AI on every run rather than
-# fixed in code -- see choose_keywords_node. LBA and La Bonne Boite are
-# excluded (fixed ROME code, not free text, see LBA_ROME_CODES).
+# fixed in code -- see choose_keywords_node. LBA is excluded (fixed ROME
+# code, not free text, see LBA_ROME_CODES).
 KEYWORD_SOURCES = ("adzuna", "jobspy", "francetravail")
 
 
@@ -357,11 +353,10 @@ def _run_fetch(source: str, label: str, offers: list, fill, query: str | None = 
     much to express generically) and may raise partway through; whatever it
     already appended before that stays, which is the whole point (a source
     that dies on its 4th of 5 locations still keeps the first 3). One copy
-    of this instead of five near-identical ones that had already started to
-    drift -- labonneboite used to special-case AccessNotGranted with its own
-    log line here; that class of failure reads fine through the same
-    "failed partway through" message as everything else, since the
-    exception's own text already says what happened."""
+    of this instead of several near-identical ones that had already started
+    to drift -- a source-specific failure (e.g. an API access error) reads
+    fine through the same "failed partway through" message as everything
+    else, since the exception's own text already says what happened."""
     error = None
     try:
         fill()
@@ -489,28 +484,6 @@ def fetch_francetravail_node(state: DiscoveryState) -> dict:
 
     return _run_fetch("francetravail", "France Travail", offers, fill, query=_join_queries(queries),
                        query_reasoning=query_entry["reasoning"])
-
-
-def fetch_labonneboite_node(state: DiscoveryState) -> dict:
-    """By ROME code (like LBA), not by keyword -- see the note on LBA_ROME_CODES."""
-    if not sources_labonneboite.CLIENT_ID:
-        _log("[fetch] La Bonne Boite -> FRANCE_TRAVAIL_CLIENT_ID not set, source skipped")
-        return {"raw_offers": [], "stats": []}
-    backed_off, until = is_backed_off("labonneboite")
-    if backed_off:
-        _log(f"[fetch] La Bonne Boite -> backed off until {until}, skipped (not attempted)")
-        return {"raw_offers": [], "stats": []}
-    profile = get_user_profile() or {"target_locations": []}
-    _log("[fetch] La Bonne Boite...")
-    offers = []
-
-    def fill():
-        for loc in _resolve_target_locations(profile):
-            offers.extend(sources_labonneboite.search_offers(
-                romes=LBA_ROME_CODES, latitude=loc["lat"], longitude=loc["lon"], distance=30,
-            ))
-
-    return _run_fetch("labonneboite", "La Bonne Boite", offers, fill)
 
 
 def fetch_ats_node(state: DiscoveryState) -> dict:
@@ -1237,7 +1210,6 @@ def build_graph():
     graph.add_node("fetch_lba", fetch_lba_node)
     graph.add_node("fetch_adzuna", fetch_adzuna_node)
     graph.add_node("fetch_francetravail", fetch_francetravail_node)
-    graph.add_node("fetch_labonneboite", fetch_labonneboite_node)
     graph.add_node("fetch_ats", fetch_ats_node)
     graph.add_node("dedupe", dedupe_node)
     graph.add_node("persist_new", persist_new_node)
@@ -1249,7 +1221,7 @@ def build_graph():
     for fetch_node in ("fetch_jobspy", "fetch_adzuna", "fetch_francetravail"):
         graph.add_edge("choose_keywords", fetch_node)
         graph.add_edge(fetch_node, "dedupe")
-    for fetch_node in ("fetch_lba", "fetch_labonneboite", "fetch_ats"):
+    for fetch_node in ("fetch_lba", "fetch_ats"):
         graph.add_edge(START, fetch_node)
         graph.add_edge(fetch_node, "dedupe")
     graph.add_edge("dedupe", "persist_new")

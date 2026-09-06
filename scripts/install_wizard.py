@@ -235,7 +235,7 @@ FEATURES = [
      "vars": ["LBA_API_KEY"], "secrets": {"LBA_API_KEY"}, "france_only": True},
     {"id": "adzuna", "title": "Adzuna (general-purpose job search)",
      "vars": ["ADZUNA_APP_ID", "ADZUNA_APP_KEY"], "secrets": {"ADZUNA_APP_KEY"}},
-    {"id": "france_travail", "title": "France Travail Connect (Offres d'emploi + La Bonne Boite)",
+    {"id": "france_travail", "title": "France Travail Connect (Offres d'emploi v2)",
      "vars": ["FRANCE_TRAVAIL_CLIENT_ID", "FRANCE_TRAVAIL_CLIENT_SECRET"],
      "secrets": {"FRANCE_TRAVAIL_CLIENT_SECRET"}, "france_only": True},
     {"id": "ats", "title": "ATS watchlist (Greenhouse/Ashby/Lever, by company name)",
