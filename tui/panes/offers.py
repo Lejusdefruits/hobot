@@ -1,11 +1,12 @@
 """Postings list -- mirrors the web dashboard's /offers (offers.html): same
 core.queries.list_offers() call, every open posting, best-scored first.
 Enter (or a click) on a row opens tui/modals.py::OfferDetailScreen for the
-actions (mark applied, exclude, tailor CV, edit the letter). The Ghost?
-column is tools.ghost_job.check_ghost_job(), computed fresh on every
-refresh -- an advisory hint (open a long time, or stock "keep your CV on
-file"-style wording), never something that changes what happens to a
-posting.
+actions (mark applied, exclude, tailor CV, edit the letter). The Age column
+is days since first_seen_at, colored green for an offer found today -- a
+quick way to spot what's actually new versus the same backlog seen before,
+which the Ghost?/check_ghost_job() column this replaced didn't answer at all
+(that's still shown as a warning in the detail screen, just not useful as a
+whole extra column here).
 
 "Show unscored" swaps the same table over to core.queries.list_unscored_offers()
 -- the backlog score_node (graphs/discovery_graph.py) hasn't reached yet, in
@@ -13,14 +14,46 @@ the same oldest-first order it'll actually process them in. "Score now" runs
 that scoring step immediately (graphs.discovery_graph.run_scoring_now(), same
 one lancer_scoring uses through /ask) instead of waiting for the next
 scheduled discovery run."""
+from datetime import datetime
+
+from rich.style import Style
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, DataTable, Static
 
 from tui.modals import OfferDetailScreen
 
-SCORED_COLUMNS = ("ID", "Score", "Title", "Company", "Location", "Letter", "Ghost?")
+SCORED_COLUMNS = ("ID", "Score", "Title", "Company", "Location", "Letter", "Age")
 UNSCORED_COLUMNS = ("ID", "Title", "Company", "Location", "Source", "Found")
+
+# Matches tui/panes/chat.py's LINK_STYLE -- a plain Rich color, not a
+# Textual CSS $token: DataTable cells render whatever Rich renderable they're
+# given, outside the CSS engine that resolves theme tokens.
+NEW_OFFER_STYLE = Style(color="bright_green", bold=True)
+
+
+def _offer_age_days(first_seen_at: str | None) -> int | None:
+    """Days since first_seen_at, or None if it's missing/unparseable.
+    first_seen_at is written via SQLite's own datetime('now'), which is UTC
+    -- comparing against datetime.now() (local time) would skew this by the
+    local UTC offset, same fix as tools/ghost_job.py::check_ghost_job."""
+    if not first_seen_at:
+        return None
+    try:
+        first_seen = datetime.fromisoformat(first_seen_at)
+    except ValueError:
+        return None
+    return (datetime.utcnow() - first_seen).days
+
+
+def _format_age(days: int | None) -> Text:
+    if days is None:
+        return Text("?")
+    if days == 0:
+        return Text("Today", style=NEW_OFFER_STYLE)
+    label = "1 day" if days == 1 else f"{days} days"
+    return Text(label)
 
 
 class OffersPane(Vertical):
@@ -70,15 +103,13 @@ class OffersPane(Vertical):
 
     def _fill_scored(self, table: DataTable) -> None:
         from core import queries
-        from tools.ghost_job import check_ghost_job
 
         self.query_one("#offers-hint", Static).update("Best open postings (Enter for detail, actions inside)")
         for row in queries.list_offers(limit=None):
-            is_ghost, _ = check_ghost_job(row["description"], row["first_seen_at"])
             table.add_row(
                 str(row["id"]), str(row["score"]), row["title"] or "", row["company"] or "",
                 row["location"] or "", "yes" if row["has_dossier"] else "no",
-                "yes" if is_ghost else "no",
+                _format_age(_offer_age_days(row["first_seen_at"])),
                 key=str(row["id"]),
             )
 
