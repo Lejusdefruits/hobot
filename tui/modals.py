@@ -85,9 +85,14 @@ class OfferDetailScreen(ModalScreen[str | None]):
     """Shows one posting in full (description, score reason, letter text if
     one exists) with the same actions the web dashboard's offer detail page
     had -- mark applied, exclude, tailor CV, edit+save the letter -- each
-    calling the exact function its Discord/web equivalent called. Dismisses
-    with a short result string the caller (tui/panes/offers.py) can show as a
-    toast, or None if nothing changed."""
+    calling the exact function its Discord/web equivalent called. "Draft
+    letter" has no such equivalent: previously the only way to get one
+    outside the automatic sweep (draft_letters_node) was to ask the chat
+    agent to compose it inline, with no direct button anywhere -- this calls
+    graphs/discovery_graph.py::draft_letter_now, the same LLM prompt and PDF
+    write that sweep uses, for one offer chosen by hand. Dismisses with a
+    short result string the caller (tui/panes/offers.py) can show as a toast,
+    or None if nothing changed."""
 
     BINDINGS = [
         ("escape", "close", "Close"),
@@ -127,9 +132,11 @@ class OfferDetailScreen(ModalScreen[str | None]):
                 yield Button("Mark applied", id="applied", classes="action-button")
                 yield Button("Exclude", id="exclude", classes="action-button")
                 yield Button("Tailor CV", id="tailor-cv", classes="action-button")
-                yield Button("Edit letter", id="edit-letter", classes="action-button")
             with Horizontal(classes="button-row"):
+                yield Button("Draft letter", id="draft-letter", classes="action-button")
+                yield Button("Edit letter", id="edit-letter", classes="action-button")
                 yield Button("Open link", id="open-link", classes="action-button")
+            with Horizontal(classes="button-row"):
                 yield Button("Open letter PDF", id="open-letter", classes="action-button")
                 yield Button("Open CV PDF", id="open-cv", classes="action-button")
                 yield Button("Close", id="close")
@@ -203,7 +210,7 @@ class OfferDetailScreen(ModalScreen[str | None]):
         # re-enable them here too, so a not-found refresh followed by a
         # successful one doesn't leave them stuck disabled with no recovery
         # short of closing and reopening the modal.
-        for bid in ("applied", "exclude", "tailor-cv", "edit-letter"):
+        for bid in ("applied", "exclude", "tailor-cv", "draft-letter", "edit-letter"):
             self.query_one(f"#{bid}", Button).disabled = False
         self.query_one("#open-link", Button).disabled = not self._url
         self.query_one("#open-letter", Button).disabled = not (self._files_row and self._files_row["cover_letter_path"])
@@ -232,6 +239,8 @@ class OfferDetailScreen(ModalScreen[str | None]):
             self._exclude()
         elif bid == "tailor-cv":
             self._tailor_cv()
+        elif bid == "draft-letter":
+            self._draft_letter()
         elif bid == "edit-letter":
             self._start_edit()
         elif bid == "cancel-edit":
@@ -295,6 +304,27 @@ class OfferDetailScreen(ModalScreen[str | None]):
             self._changed = True
         else:
             self.app.call_from_thread(self.notify, "CV tailoring failed -- check the daemon logs.", severity="error")
+        self.app.call_from_thread(self.refresh_detail)
+
+    def _draft_letter(self) -> None:
+        # Same reasoning as _tailor_cv above: an LLM call (plus, when
+        # configured, a SearXNG company lookup first) run off the UI thread.
+        self.notify("Drafting cover letter...", timeout=3)
+        self.run_worker(self._draft_letter_worker, thread=True, exclusive=True)
+
+    def _draft_letter_worker(self) -> None:
+        from core.db import get_connection
+        from graphs.discovery_graph import draft_letter_now
+        from tools import common
+        path = draft_letter_now(self.offer_id)
+        if path is not None:
+            with get_connection() as conn:
+                common.upsert_application(conn, self.offer_id, defaults={"status": "draft"}, cover_letter_path=str(path))
+            self._changed = True
+        else:
+            self.app.call_from_thread(
+                self.notify, "Letter drafting failed -- check the daemon logs.", severity="error",
+            )
         self.app.call_from_thread(self.refresh_detail)
 
     def _start_edit(self) -> None:

@@ -1,5 +1,5 @@
 from core.db import get_connection
-from graphs.discovery_graph import _is_relevant, _relevance_keywords, persist_adhoc_offers
+from graphs.discovery_graph import _is_relevant, _is_wrong_country, _relevance_keywords, persist_adhoc_offers
 from tools.common import make_offer, normalize_text
 
 
@@ -61,6 +61,28 @@ def test_is_relevant_false_when_neither_title_nor_description_match(monkeypatch)
     import tools.semantic_relevance as semantic_relevance
     monkeypatch.setattr(semantic_relevance, "is_relevant_semantic", lambda *a, **k: None)
     assert _is_relevant("Poste commercial", "Vente terrain B2B", ["python"], []) is False
+
+
+def test_is_wrong_country_rejects_a_non_fr_country_code_prefix():
+    """Airwallex's own Ashby board tags every posting "XX - City" -- any
+    such prefix other than FR is a confident non-France signal."""
+    assert _is_wrong_country("SG - Singapore") is True
+    assert _is_wrong_country("US - San Francisco") is True
+
+
+def test_is_wrong_country_keeps_a_french_code_prefix():
+    assert _is_wrong_country("FR - Paris") is False
+
+
+def test_is_wrong_country_keeps_locations_with_no_country_code_prefix():
+    """Most sources never put a country code in their own location field at
+    all -- a bare city, a French department number, or an empty string must
+    never be treated as a foreign signal."""
+    assert _is_wrong_country("Paris") is False
+    assert _is_wrong_country("Rennes, Brittany, France") is False
+    assert _is_wrong_country("94 - FONTENAY-SOUS-BOIS") is False
+    assert _is_wrong_country("") is False
+    assert _is_wrong_country(None) is False
 
 
 def test_is_relevant_does_not_match_a_keyword_as_a_substring(monkeypatch):

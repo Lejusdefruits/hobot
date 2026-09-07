@@ -90,7 +90,7 @@ def _run_discovery() -> None:
         app.invoke({
             "raw_offers": [], "stats": [], "queries": {}, "new_offers": [], "n_new_by_source": {},
             "scored_offers": [], "drafted_letters": [], "skipped_red_flag": [], "contacts_found": [],
-            "skipped_irrelevant": 0, "skipped_cross_source": 0, "skipped_formation": 0,
+            "skipped_irrelevant": 0, "skipped_cross_source": 0, "skipped_formation": 0, "skipped_wrong_country": 0,
         })
     except Exception:
         log.error("discovery failed:\n%s", traceback.format_exc())

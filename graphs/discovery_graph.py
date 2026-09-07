@@ -52,6 +52,7 @@ when it's configured: one query per letter, never more.
 """
 import operator
 import os
+import re
 import sys
 import time
 import uuid
@@ -178,6 +179,7 @@ class DiscoveryState(TypedDict):
     skipped_irrelevant: int
     skipped_cross_source: int
     skipped_formation: int
+    skipped_wrong_country: int
 
 
 def _log(msg: str) -> None:
@@ -605,6 +607,24 @@ def _is_formation_intermediary(description: str) -> bool:
     return any(m in d for m in FORMATION_PARTNER_MARKERS) and any(m in d for m in FORMATION_SCHOOL_MARKERS)
 
 
+# Some ATS watchlist companies tag every one of their own postings
+# "XX - City" (a country code, not always strict ISO-3166 -- Airwallex's own
+# Ashby board says "UK", not "GB") right in the location field -- a cheap,
+# no-LLM signal for a company operating (and hiring) well beyond France.
+# Never used to REQUIRE a French marker (most sources never put a country
+# code in their own location field at all, a French JobSpy/LBA/France
+# Travail posting included -- requiring one would drop those), only to
+# reject a posting that explicitly names a different one. Confirmed live:
+# every one of Airwallex's 366 unscored postings carried this exact prefix,
+# for 20 different non-French countries.
+_COUNTRY_CODE_RE = re.compile(r"^([A-Za-z]{2})\s*-\s")
+
+
+def _is_wrong_country(location: str | None) -> bool:
+    match = _COUNTRY_CODE_RE.match((location or "").strip())
+    return bool(match) and match.group(1).upper() != "FR"
+
+
 def persist_adhoc_offers(raw_offers: list[dict]) -> list[dict]:
     """Dedup + persistence for an ON-DEMAND search (chercher_offres_maintenant,
     triggered from chat) -- not a node in the scheduled graph, deliberately a
@@ -677,6 +697,7 @@ def dedupe_node(state: DiscoveryState) -> dict:
     skipped_irrelevant = 0
     skipped_cross_source = 0
     skipped_formation = 0
+    skipped_wrong_country = 0
     seen_hashes: set[str] = set()
     seen_dedup_keys: set[str] = set()
 
@@ -701,6 +722,8 @@ def dedupe_node(state: DiscoveryState) -> dict:
             ).fetchone()
             if row:
                 conn.execute("UPDATE offers SET last_seen_at = datetime('now') WHERE id = ?", (row["id"],))
+            elif _is_wrong_country(offer.get("location")):
+                skipped_wrong_country += 1
             elif not _is_relevant(offer.get("title"), offer.get("description"), keywords, profile["target_roles"]):
                 skipped_irrelevant += 1
             elif _is_formation_intermediary(offer.get("description")):
@@ -711,6 +734,8 @@ def dedupe_node(state: DiscoveryState) -> dict:
     parts = [f"{len(state['raw_offers'])} raw -> {len(new_offers)} new to save"]
     if skipped_cross_source:
         parts.append(f"{skipped_cross_source} cross-source duplicate(s)")
+    if skipped_wrong_country:
+        parts.append(f"{skipped_wrong_country} dropped (wrong country)")
     if skipped_irrelevant:
         parts.append(f"{skipped_irrelevant} dropped by the pre-filter")
     if skipped_formation:
@@ -721,6 +746,7 @@ def dedupe_node(state: DiscoveryState) -> dict:
         "skipped_irrelevant": skipped_irrelevant,
         "skipped_cross_source": skipped_cross_source,
         "skipped_formation": skipped_formation,
+        "skipped_wrong_country": skipped_wrong_country,
     }
 
 
@@ -984,6 +1010,44 @@ factual error in the letter):
 Reply with ONLY JSON: {{"lettre": "the full text, with an appropriate greeting and closing, signed {full_name}"}}"""
 
 
+def draft_letter_now(offer_id: int) -> Path | None:
+    """On-demand: writes one cover letter for one specific offer right now,
+    for tui/modals.py's "Draft letter" button -- same LLM call and PDF write
+    draft_letters_node's automatic sweep uses, but for a single offer chosen
+    by hand, so no score threshold and no company-health gate: both exist to
+    keep the automatic sweep from spending LLM calls on offers/companies
+    nobody asked about, but a click on one specific offer already is that
+    ask (same reasoning as run_scoring_now() ignoring the load gate above).
+    Never raises past this boundary, same convention as
+    tools/cv_tailor.py::tailor_cv -- a failed attempt must not look
+    different from "nothing to draft"."""
+    try:
+        with get_connection() as conn:
+            offer = conn.execute(
+                "SELECT title, company, location, description FROM offers WHERE id = ?", (offer_id,),
+            ).fetchone()
+        if not offer:
+            return None
+        profile = get_user_profile() or {"skills": [], "target_roles": []}
+        full_name = profile.get("full_name") or "[Your name]"
+        hint = f"{offer['title'] or ''} {offer['location'] or ''}".strip()
+        infos_entreprise = web_search.search_company(offer["company"] or "", hint=hint)
+        result = chat_json(LETTER_PROMPT.format(
+            full_name=full_name,
+            skills=", ".join(profile.get("skills") or []), target_roles=", ".join(profile.get("target_roles") or []),
+            title=offer["title"] or "", company=offer["company"] or "",
+            description=(offer["description"] or "")[:DESCRIPTION_CHAR_LIMIT],
+            infos_entreprise=infos_entreprise or "(no additional information found)",
+        ))
+        lettre = result.get("lettre", "")
+        if not lettre:
+            return None
+        from tools.documents import generate_letter_pdf
+        return generate_letter_pdf(offer_id, lettre, full_name=full_name)
+    except Exception:
+        return None
+
+
 def draft_letters_node(state: DiscoveryState) -> dict:
     """The agent's own initiative: above a score threshold, writes and saves
     a letter draft WITHOUT being asked -- never a send, just a file in
@@ -1216,8 +1280,11 @@ def log_run_node(state: DiscoveryState) -> dict:
         skipped_irrelevant = state.get("skipped_irrelevant") or 0
         skipped_cross_source = state.get("skipped_cross_source") or 0
         skipped_formation = state.get("skipped_formation") or 0
-        if skipped_irrelevant or skipped_cross_source or skipped_formation:
+        skipped_wrong_country = state.get("skipped_wrong_country") or 0
+        if skipped_irrelevant or skipped_cross_source or skipped_formation or skipped_wrong_country:
             filter_bits = []
+            if skipped_wrong_country:
+                filter_bits.append(f"{skipped_wrong_country} wrong country")
             if skipped_irrelevant:
                 filter_bits.append(f"{skipped_irrelevant} outside profile")
             if skipped_cross_source:
@@ -1274,7 +1341,7 @@ if __name__ == "__main__":
     result = app.invoke({
         "raw_offers": [], "stats": [], "queries": {}, "new_offers": [], "n_new_by_source": {},
         "scored_offers": [], "drafted_letters": [], "skipped_red_flag": [], "contacts_found": [],
-        "skipped_irrelevant": 0, "skipped_cross_source": 0, "skipped_formation": 0,
+        "skipped_irrelevant": 0, "skipped_cross_source": 0, "skipped_formation": 0, "skipped_wrong_country": 0,
     })
 
     print(f"Sources: {result['stats']}")
