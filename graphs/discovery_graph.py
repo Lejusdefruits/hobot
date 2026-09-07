@@ -1007,7 +1007,18 @@ Only use a detail if you're reasonably sure it's actually about THIS company
 factual error in the letter):
 {infos_entreprise}
 
-Reply with ONLY JSON: {{"lettre": "the full text, with an appropriate greeting and closing, signed {full_name}"}}"""
+Company above is empty when the source itself didn't disclose the employer's
+identity -- sometimes deliberate (an anonymous listing, a staffing agency
+hiring "for a client"), sometimes the name is still readable in the
+Description itself (e.g. a paragraph that opens by naming the company). When
+Company is empty: if the Description names the actual employer with
+reasonable confidence, use that exact name consistently -- both in the
+letter body and in "entreprise_detectee" below, so the two never disagree.
+If it's genuinely anonymous (a staffing agency, "our client", no name
+anywhere), don't invent or guess one -- write the letter without naming a
+specific company, and leave "entreprise_detectee" null.
+
+Reply with ONLY JSON: {{"lettre": "the full text, with an appropriate greeting and closing, signed {full_name}", "entreprise_detectee": "the company name if Company was empty and you found one in the Description, otherwise null"}}"""
 
 
 def draft_letter_now(offer_id: int) -> Path | None:
@@ -1042,8 +1053,12 @@ def draft_letter_now(offer_id: int) -> Path | None:
         lettre = result.get("lettre", "")
         if not lettre:
             return None
+        detected_company = result.get("entreprise_detectee")
+        if detected_company and not offer["company"]:
+            _log(f"[letter] #{offer_id}: no company on file, using \"{detected_company}\" read from the "
+                 f"description -- verify before sending")
         from tools.documents import generate_letter_pdf
-        return generate_letter_pdf(offer_id, lettre, full_name=full_name)
+        return generate_letter_pdf(offer_id, lettre, full_name=full_name, company_override=detected_company)
     except Exception:
         return None
 
@@ -1103,8 +1118,14 @@ def draft_letters_node(state: DiscoveryState) -> dict:
                     infos_entreprise=infos_entreprise or "(no additional information found)",
                 ))
                 lettre = result.get("lettre", "")
+                detected_company = result.get("entreprise_detectee")
+                if detected_company and not offer["company"]:
+                    _log(f"[letter] #{offer['id']}: no company on file, using \"{detected_company}\" read "
+                         f"from the description -- verify before sending")
                 from tools.documents import generate_letter_pdf
-                path = generate_letter_pdf(offer["id"], lettre, full_name=full_name)
+                path = generate_letter_pdf(
+                    offer["id"], lettre, full_name=full_name, company_override=detected_company,
+                )
                 # upsert, not a blind INSERT: a CV may already have been
                 # tailored for this offer on its own (adapter_cv via /ask)
                 # before this run, which already created the shared

@@ -125,7 +125,20 @@ def _body_markup(lettre: str) -> str:
     return "\n\n".join(p.translate(_MARKUP_ESCAPE) for p in paragraphs if p)
 
 
-def generate_letter_pdf(offer_id: int, lettre: str, full_name: str | None = None) -> Path:
+def generate_letter_pdf(
+    offer_id: int, lettre: str, full_name: str | None = None, company_override: str | None = None,
+) -> Path:
+    """company_override: a company name the letter-writing LLM read out of
+    the offer's own description when offers.company was empty (see
+    LETTER_PROMPT's "entreprise_detectee", graphs/discovery_graph.py) --
+    used here ONLY when the structured company column is itself empty, so a
+    known, structured name is never second-guessed by a free-text read.
+    Without this, the recipient header fell back to company_label's own
+    "(company withheld)" even when the LLM had already confidently named
+    the company in the letter body it just wrote -- confirmed live on offer
+    #267 (France Travail: company column empty, but the description opens
+    by naming the employer), where the header and body ended up
+    contradicting each other."""
     with get_connection() as conn:
         offer = conn.execute(
             "SELECT company, title, location FROM offers WHERE id = ?", (offer_id,)
@@ -136,13 +149,14 @@ def generate_letter_pdf(offer_id: int, lettre: str, full_name: str | None = None
     address = ", ".join(profile.get("target_locations") or []) or None
     send_account = os.environ.get("GMAIL_SEND_ACCOUNT") or None
     contacts = [(send_account, f"mailto:{send_account}")] if send_account else []
+    recipient_company = (offer["company"] if offer else None) or company_override
 
     prelude = "\n".join((
         f"#let hobot_name = {_typst_str(name)}",
         f"#let hobot_role = {_typst_str(role)}",
         f"#let hobot_address = {_typst_str(address)}",
         f"#let hobot_contacts = {_typst_contacts(contacts)}",
-        f"#let hobot_recipient_name = {_typst_str(company_label(offer['company']) if offer else None)}",
+        f"#let hobot_recipient_name = {_typst_str(company_label(recipient_company))}",
         f"#let hobot_recipient_address = {_typst_str(offer['location'] if offer else None)}",
         f"#let hobot_subject = {_typst_str(offer['title'] if offer else None)}",
         f"#let hobot_date = {_typst_str(_display_date(_is_french(lettre)))}",
