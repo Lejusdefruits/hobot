@@ -80,3 +80,23 @@ def test_score_node_on_demand_ignores_the_load_gate(monkeypatch, db):
     )
     assert row["status"] == "scored"
     assert row["score"] == 70
+
+
+def test_score_node_stops_early_once_time_budget_is_exceeded(monkeypatch, db):
+    """A caller with its own deadline (Discord's /ask, via run_scoring_now())
+    must never run past time_budget, regardless of how many offers are still
+    queued -- MAX_SCORE_PER_RUN alone doesn't bound wall-clock time."""
+    monkeypatch.setattr(discovery_graph.hardware, "is_machine_busy", lambda threshold=None: False)
+    monkeypatch.setattr(discovery_graph, "chat_json", lambda prompt: {"score": 50, "reason": "ok"})
+    times = iter([0.0, 1.0, 100.0])  # start, first offer's check, second offer's check (over budget)
+    monkeypatch.setattr(discovery_graph.time, "monotonic", lambda: next(times))
+    with get_connection() as conn:
+        insert_offer(conn, url_hash="budget-1", dedup_key="a|1", score=None, status="new")
+        insert_offer(conn, url_hash="budget-2", dedup_key="a|2", score=None, status="new")
+
+    result = discovery_graph.score_node({}, respect_load_gate=False, time_budget=10.0)
+
+    assert len(result["scored_offers"]) == 1
+    with get_connection() as conn:
+        remaining = conn.execute("SELECT COUNT(*) AS n FROM offers WHERE score IS NULL").fetchone()
+    assert remaining["n"] == 1

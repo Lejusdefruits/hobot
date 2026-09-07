@@ -53,6 +53,7 @@ when it's configured: one query per letter, never more.
 import operator
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Annotated, TypedDict
@@ -344,6 +345,15 @@ def choose_keywords_node(state: DiscoveryState) -> dict:
 # persist_new_node).
 MAX_SCORE_PER_RUN = int(os.environ.get("DISCOVERY_MAX_SCORE_PER_RUN", "40"))
 
+# run_scoring_now() (chat's lancer_scoring, the TUI's "Score now") is a
+# synchronous call inside a request with its own deadline -- Discord's /ask
+# gives the whole agent turn AGENT_TIMEOUT_SECONDS (180s by default), and a
+# full MAX_SCORE_PER_RUN batch at ~13s/offer (confirmed live) can run past
+# that alone. Kept well under 180s to leave headroom for the rest of the
+# turn (tool selection, other calls); the scheduled path has no such
+# deadline and stays count-only.
+SCORE_NOW_TIME_BUDGET_SECONDS = float(os.environ.get("DISCOVERY_SCORE_NOW_TIME_BUDGET_SECONDS", "120"))
+
 
 def _run_fetch(source: str, label: str, offers: list, fill, query: str | None = None,
                 query_reasoning: str | None = None) -> dict:
@@ -555,12 +565,19 @@ def _is_relevant(title: str, description: str, keywords: list[str], target_roles
     is the last resort, only reached when both keyword checks fail --
     opt-in (RELEVANCE_SEMANTIC_FALLBACK, off by default) and returns None
     rather than running at all when it's off or its dependency isn't
-    installed, so this stays keyword-only for anyone who hasn't opted in."""
+    installed, so this stays keyword-only for anyone who hasn't opted in.
+
+    Keywords are matched against whole words, not substrings: short
+    keywords like "ia" used to match inside "associate" or "Australia",
+    letting almost anything through (confirmed live: 495/496 Airwallex
+    postings, most with no AI/data content at all, passed the filter this
+    way)."""
     if not keywords:
         return True
-    if any(kw in normalize_text(title) for kw in keywords):
+    keyword_set = set(keywords)
+    if keyword_set & set(normalize_text(title).split()):
         return True
-    if any(kw in normalize_text(description) for kw in keywords):
+    if keyword_set & set(normalize_text(description).split()):
         return True
     from tools.semantic_relevance import is_relevant_semantic
     semantic = is_relevant_semantic(f"{title or ''} {description or ''}".strip(), target_roles)
@@ -835,7 +852,7 @@ def _should_defer_scoring() -> tuple[bool, str | None]:
     return (busy, "high local CPU load") if busy else (False, None)
 
 
-def score_node(state: DiscoveryState, respect_load_gate: bool = True) -> dict:
+def score_node(state: DiscoveryState, respect_load_gate: bool = True, time_budget: float | None = None) -> dict:
     """Scores directly from the database queue (not from state["new_offers"]):
     covers both this run's offers and the unscored backlog from previous runs.
 
@@ -843,7 +860,12 @@ def score_node(state: DiscoveryState, respect_load_gate: bool = True) -> dict:
     check entirely -- that path is always a direct, synchronous request (a
     chat command, the TUI's "Score now" button), so refusing it because the
     CPU happens to be busy would be surprising instead of helpful; only the
-    scheduled path defers on its own initiative."""
+    scheduled path defers on its own initiative.
+
+    time_budget (seconds, run_scoring_now() only) stops the batch early,
+    same as running out of queue -- MAX_SCORE_PER_RUN alone doesn't bound
+    wall-clock time, and a caller with its own deadline (Discord's /ask)
+    needs one that does."""
     if respect_load_gate:
         deferred, reason = _should_defer_scoring()
         if deferred:
@@ -855,10 +877,15 @@ def score_node(state: DiscoveryState, respect_load_gate: bool = True) -> dict:
     scored = []
     company_searches_done = 0
     searched_companies: dict[str, str] = {}  # avoids searching the same company twice in this run
+    start = time.monotonic()
     with get_connection() as conn:
         rows = conn.execute(SCORE_QUEUE_QUERY, (MAX_SCORE_PER_RUN,)).fetchall()
         total = len(rows)
         for i, row in enumerate(rows, 1):
+            if time_budget is not None and time.monotonic() - start > time_budget:
+                _log(f"[score] stopping at {i - 1}/{total} -- time budget ({time_budget:.0f}s) reached, "
+                     f"call again for the rest")
+                break
             title = (row["title"] or "(untitled)")[:55]
 
             infos_entreprise = "(not searched -- the offer's own description was already enough)"
@@ -923,11 +950,12 @@ def run_scoring_now() -> list[dict]:
     button (tui/panes/offers.py). score_node reads its queue straight from
     the database (not from graph state), so it's already safe to call on its
     own like this; still capped at MAX_SCORE_PER_RUN per call, same as a
-    scheduled run -- call it again if the backlog is bigger than that.
+    scheduled run, AND at SCORE_NOW_TIME_BUDGET_SECONDS of wall-clock time --
+    call it again if the backlog is bigger than either limit covers.
     respect_load_gate=False: a direct request like this should never be
     silently skipped over machine load the user didn't ask about -- only
     the scheduled path defers on its own initiative."""
-    return score_node({}, respect_load_gate=False)["scored_offers"]
+    return score_node({}, respect_load_gate=False, time_budget=SCORE_NOW_TIME_BUDGET_SECONDS)["scored_offers"]
 
 
 LETTER_SCORE_THRESHOLD = int(os.environ.get("DISCOVERY_LETTER_SCORE_THRESHOLD", "80"))
@@ -1211,7 +1239,15 @@ def build_graph():
     graph.add_node("fetch_adzuna", fetch_adzuna_node)
     graph.add_node("fetch_francetravail", fetch_francetravail_node)
     graph.add_node("fetch_ats", fetch_ats_node)
-    graph.add_node("dedupe", dedupe_node)
+    # defer=True: fetch_lba/fetch_ats branch straight off START while
+    # fetch_jobspy/fetch_adzuna/fetch_francetravail wait on choose_keywords
+    # first, so the two groups finish in different supersteps -- without
+    # defer, dedupe (and everything after it, score included) ran once per
+    # group instead of once total, silently re-scoring the same backlog
+    # twice every run (confirmed live: 80 [score] lines for a
+    # MAX_SCORE_PER_RUN=40 run). defer holds the node until every incoming
+    # branch has actually settled, regardless of superstep.
+    graph.add_node("dedupe", dedupe_node, defer=True)
     graph.add_node("persist_new", persist_new_node)
     graph.add_node("score", score_node)
     graph.add_node("draft_letters", draft_letters_node)

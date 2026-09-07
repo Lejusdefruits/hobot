@@ -63,6 +63,16 @@ def test_is_relevant_false_when_neither_title_nor_description_match(monkeypatch)
     assert _is_relevant("Poste commercial", "Vente terrain B2B", ["python"], []) is False
 
 
+def test_is_relevant_does_not_match_a_keyword_as_a_substring(monkeypatch):
+    """A short keyword like 'ia' must only match as a whole word -- matching
+    it as a substring let almost anything through (confirmed live: 495/496
+    Airwallex postings passed the filter this way, "ia" matching inside
+    "associate", "Australia", etc.)."""
+    import tools.semantic_relevance as semantic_relevance
+    monkeypatch.setattr(semantic_relevance, "is_relevant_semantic", lambda *a, **k: None)
+    assert _is_relevant("Senior Associate, Partner Marketing", "Based in Australia.", ["ia"], []) is False
+
+
 def test_persist_adhoc_offers_dedupes_within_the_same_batch(db):
     offer = make_offer(source="jobspy_indeed", external_id="1", title="Backend Engineer",
                         company="Acme", location="Paris", description="x", url="https://a")
