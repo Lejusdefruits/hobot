@@ -53,6 +53,20 @@ LOCATIONS: dict[str, dict] = {
 
 DEFAULT_LOCATION = LOCATIONS["paris"]
 
+# Region name -> the LOCATIONS key it should resolve to. Distinct from the
+# city-phrase matching below: a profile entry like plain "Île-de-France" (no
+# "Paris" token anywhere in it) has no city name for that matching to find,
+# so it silently resolved to None -- confirmed live, this exact
+# target_locations value meant Adzuna/France Travail/LBA never searched
+# Paris at all, by far the largest job market for an AI/LLM profile (0
+# Adzuna results in Le Havre/Rennes for the same query that found 5 in
+# Paris). Small and deliberately narrow, same spirit as LOCATIONS itself --
+# not an attempt at full French administrative geography.
+REGION_ALIASES = {
+    "ile de france": "paris",
+    "idf": "paris",
+}
+
 
 def _contains_phrase(words: list[str], phrase_words: list[str]) -> bool:
     n = len(phrase_words)
@@ -68,16 +82,23 @@ def resolve(ville: str | None) -> dict | None:
     inside a more descriptive piece of text (e.g. "Paris / Île-de-France
     (priority)", seen for real in user_profile.target_locations) -- a strict
     exact match would have silently dropped Paris the moment the profile
-    describes the city with a bit of context instead of a bare name."""
+    describes the city with a bit of context instead of a bare name. A
+    region name (REGION_ALIASES) is checked the same two ways, exact then
+    phrase-contained, resolving to that region's principal city."""
     if not ville:
         return None
     norm = normalize_text(ville)
     if norm in LOCATIONS:
         return LOCATIONS[norm]
+    if norm in REGION_ALIASES:
+        return LOCATIONS[REGION_ALIASES[norm]]
     words = norm.split()
     for key, loc in LOCATIONS.items():
         if _contains_phrase(words, key.split()):
             return loc
+    for alias, key in REGION_ALIASES.items():
+        if _contains_phrase(words, alias.split()):
+            return LOCATIONS[key]
     return None
 
 
