@@ -1,10 +1,11 @@
 """Postings list -- mirrors the web dashboard's /offers (offers.html): same
-core.queries.list_offers() call, 25 best-scored open postings. Enter (or a
-click) on a row opens tui/modals.py::OfferDetailScreen for the actions
-(mark applied, exclude, tailor CV, edit the letter). The Ghost? column is
-tools.ghost_job.check_ghost_job(), computed fresh on every refresh -- an
-advisory hint (open a long time, or stock "keep your CV on file"-style
-wording), never something that changes what happens to a posting.
+core.queries.list_offers() call, every open posting, best-scored first.
+Enter (or a click) on a row opens tui/modals.py::OfferDetailScreen for the
+actions (mark applied, exclude, tailor CV, edit the letter). The Ghost?
+column is tools.ghost_job.check_ghost_job(), computed fresh on every
+refresh -- an advisory hint (open a long time, or stock "keep your CV on
+file"-style wording), never something that changes what happens to a
+posting.
 
 "Show unscored" swaps the same table over to core.queries.list_unscored_offers()
 -- the backlog score_node (graphs/discovery_graph.py) hasn't reached yet, in
@@ -30,8 +31,18 @@ class OffersPane(Vertical):
     def compose(self) -> ComposeResult:
         yield Static("Best open postings (Enter for detail, actions inside)", id="offers-hint", classes="hint")
         with Horizontal(classes="button-row"):
-            yield Button("Show unscored", id="toggle-unscored")
-            yield Button("Score now", id="score-now")
+            # active_effect_duration=0: Button's default 0.2s "clicked" flash
+            # (the -active CSS class) makes it silently ignore a second click
+            # that lands inside that window -- confirmed live, every other
+            # quick click on "Show unscored/scored" did nothing. Neither
+            # button needs the flash badly enough to trade responsiveness
+            # for it.
+            toggle_btn = Button("Show unscored", id="toggle-unscored")
+            toggle_btn.active_effect_duration = 0
+            score_btn = Button("Score now", id="score-now")
+            score_btn.active_effect_duration = 0
+            yield toggle_btn
+            yield score_btn
         yield DataTable(id="offers-table", cursor_type="row", zebra_stripes=True)
 
     def on_mount(self) -> None:
@@ -62,7 +73,7 @@ class OffersPane(Vertical):
         from tools.ghost_job import check_ghost_job
 
         self.query_one("#offers-hint", Static).update("Best open postings (Enter for detail, actions inside)")
-        for row in queries.list_offers(limit=25):
+        for row in queries.list_offers(limit=None):
             is_ghost, _ = check_ghost_job(row["description"], row["first_seen_at"])
             table.add_row(
                 str(row["id"]), str(row["score"]), row["title"] or "", row["company"] or "",
@@ -78,7 +89,7 @@ class OffersPane(Vertical):
         self.query_one("#offers-hint", Static).update(
             "Waiting to be scored, oldest first (Enter for detail) -- \"Score now\" scores this backlog."
         )
-        for row in queries.list_unscored_offers(limit=25):
+        for row in queries.list_unscored_offers(limit=None):
             table.add_row(
                 str(row["id"]), row["title"] or "", row["company"] or "", row["location"] or "",
                 offer_type_label(row["source"]), row["first_seen_at"] or "",

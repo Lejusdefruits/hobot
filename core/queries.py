@@ -89,34 +89,46 @@ def get_status_summary() -> dict:
     return {"last_discovery": last_discovery, "last_email": last_email, "backlog": backlog, "best": best}
 
 
-def list_offers(limit: int = 8) -> list:
+def list_offers(limit: int | None = 8) -> list:
     """description and first_seen_at are pulled here (not just id/title/...)
     so every caller can run tools.ghost_job.check_ghost_job() on each row
-    without a second query per posting."""
+    without a second query per posting. limit=None returns every eligible
+    row -- the TUI's own Offers pane (tui/panes/offers.py) needs that: its
+    DataTable scrolls natively, unlike the old web dashboard this used to
+    mirror, so capping the query silently hid the rest of the backlog
+    instead of just leaving it a scroll away."""
     with get_connection() as conn:
-        return conn.execute(
-            """SELECT o.id, o.title, o.company, o.location, o.score, o.url,
-                      o.description, o.first_seen_at,
-                      (a.cover_letter_path IS NOT NULL) AS has_dossier
-               FROM offers o LEFT JOIN applications a ON a.offer_id = o.id
-               WHERE o.score IS NOT NULL AND o.status NOT IN ('applied', 'excluded', 'expired')
-               ORDER BY o.score DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
+        query = (
+            "SELECT o.id, o.title, o.company, o.location, o.score, o.url, "
+            "o.description, o.first_seen_at, (a.cover_letter_path IS NOT NULL) AS has_dossier "
+            "FROM offers o LEFT JOIN applications a ON a.offer_id = o.id "
+            "WHERE o.score IS NOT NULL AND o.status NOT IN ('applied', 'excluded', 'expired') "
+            "ORDER BY o.score DESC"
+        )
+        params: tuple = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (limit,)
+        return conn.execute(query, params).fetchall()
 
 
-def list_unscored_offers(limit: int = 25) -> list:
+def list_unscored_offers(limit: int | None = 25) -> list:
     """Offers still waiting on score_node (graphs/discovery_graph.py) --
     same oldest-first order that queue is actually scored in
     (SCORE_QUEUE_QUERY), so this doubles as a preview of what a scoring run
-    would pick up next."""
+    would pick up next. limit=None returns every eligible row -- see
+    list_offers above for why the TUI needs that."""
     with get_connection() as conn:
-        return conn.execute(
-            """SELECT id, title, company, location, source, first_seen_at FROM offers
-               WHERE score IS NULL AND status NOT IN ('applied', 'excluded', 'expired')
-               ORDER BY first_seen_at ASC LIMIT ?""",
-            (limit,),
-        ).fetchall()
+        query = (
+            "SELECT id, title, company, location, source, first_seen_at FROM offers "
+            "WHERE score IS NULL AND status NOT IN ('applied', 'excluded', 'expired') "
+            "ORDER BY first_seen_at ASC"
+        )
+        params: tuple = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (limit,)
+        return conn.execute(query, params).fetchall()
 
 
 def get_offer_row(offer_id: int):
